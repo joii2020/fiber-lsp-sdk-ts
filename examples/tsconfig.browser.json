@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../.example",
+    "noEmit": false,
+    "declaration": false,
+    "declarationMap": false,
+    "rewriteRelativeImportExtensions": true,
+    "types": [],
+    "paths": {}
+  },
+  "include": ["browser/**/*.ts", "shared/**/*.ts"]
+}

@@ -1,0 +1,64 @@
+{
+  "name": "fiber-lsp-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Fiber LSP tenant registration, channel management, payments, and recovery.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "fiber",
+    "lsp",
+    "ckb",
+    "sdk",
+    "typescript"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p examples/tsconfig.json && tsc -p tsconfig.tooling.json",
+    "example:node": "pnpm run build && node examples/node.ts",
+    "example:browser": "pnpm run build && pnpm run build:example && node examples/server/index.ts",
+    "prepack": "pnpm run build",
+    "build:wasm": "node scripts/build-wasm.ts",
+    "test": "pnpm run build && node --test test/*.test.ts",
+    "test:browser": "pnpm run build && pnpm run build:example && playwright test",
+    "test:integration": "pnpm run build && node --test test/integration/*.test.ts",
+    "format": "prettier --write src scripts examples test playwright.config.ts tsconfig*.json",
+    "format:check": "prettier --check src scripts examples test playwright.config.ts tsconfig*.json",
+    "test:fixtures": "node scripts/build-fixtures.ts",
+    "example": "pnpm run example:browser",
+    "build:example": "node scripts/build-example.ts"
+  },
+  "devDependencies": {
+    "@ckb-ccc/core": "1.14.0",
+    "@iarna/toml": "2.2.5",
+    "@playwright/test": "^1.65.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "fake-indexeddb": "^6.2.8",
+    "js-yaml": "5.4.1",
+    "prettier": "^3.9.10",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "ws": "^8.22.2"
+  },
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.17.0"
+}

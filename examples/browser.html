@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fiber TS/JS Demo</title>
+    <link rel="stylesheet" href="/examples/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header class="toolbar">
+        <h1>Fiber TS/JS Demo</h1>
+        <small id="storage-notice" role="status"></small>
+        <div class="tools">
+          <button id="refresh">Refresh status</button>
+          <button id="add-user" disabled>Add user</button>
+        </div>
+        <div class="status-line">
+          <span id="network-status" role="status">Connecting to the local environment…</span
+          ><span class="connection" id="endpoint">CKB RPC: Connecting</span>
+        </div>
+      </header>
+      <p id="global-message" class="message" role="status" hidden></p>
+      <section class="accounts" aria-label="Two-account workspace">
+        <article id="left" class="account-panel" aria-label="Left account"></article>
+        <article id="right" class="account-panel" aria-label="Right account"></article>
+      </section>
+    </main>
+    <dialog id="user-dialog" aria-labelledby="dialog-title">
+      <form id="user-form">
+        <h2 id="dialog-title">Add user</h2>
+        <p class="muted">Choose an offckb wallet from #6–#9 to use its existing test CKB.</p>
+        <label
+          >name · Unique username<input
+            name="name"
+            required
+            maxlength="32"
+            pattern="[a-zA-Z0-9_-]+"
+            placeholder="e.g. alice"
+            autocomplete="off"
+        /></label>
+        <label
+          >display · Display name<input
+            name="display"
+            required
+            maxlength="64"
+            placeholder="e.g. Alice"
+            autocomplete="off"
+        /></label>
+        <label
+          >offckb account<select name="accountIndex" required>
+            <option value="">Select a wallet</option>
+          </select></label
+        >
+        <p class="muted small">Preallocated, node, reserved, and linked wallets are unavailable.</p>
+        <p id="form-error" class="message error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-dialog">Cancel</button
+          ><button type="submit">Create user</button>
+        </div>
+      </form>
+    </dialog>
+    <template id="panel-template">
+      <h2 class="slot-title"></h2>
+      <label class="login-label"
+        >Select account<select class="login" disabled>
+          <option value="">Select a user</option>
+        </select></label
+      >
+      <div class="workspace" hidden>
+        <div class="identity">
+          <div>
+            <h3 class="display-name"></h3>
+            <span class="user-name muted"></span>
+          </div>
+          <button class="logout">Log out</button>
+        </div>
+        <div class="wallet-strip">
+          <span class="wallet-name"></span><code class="wallet-address"></code>
+        </div>
+        <div class="balances">
+          <div>
+            <span>On-chain wallet <small>CKB</small></span
+            ><strong class="chain-balance">—</strong>
+          </div>
+          <div>
+            <span>Can send <small>CKB</small></span
+            ><strong class="local-balance">—</strong>
+          </div>
+          <div>
+            <span>Can receive <small>CKB</small></span
+            ><strong class="remote-balance">—</strong>
+          </div>
+        </div>
+        <div class="setup">
+          <div class="setup-row">
+            <div>
+              <strong>Tenant identity</strong><span class="tenant-state muted">Not registered</span>
+            </div>
+            <button class="register">Register tenant</button>
+          </div>
+          <label
+            >Current tenant<select class="tenant-select" aria-label="Current tenant"></select
+          ></label>
+          <button class="new-tenant">Add tenant</button>
+          <code class="tenant-id detail-id"></code>
+          <div class="setup-row">
+            <div>
+              <strong>Payment channel</strong><span class="channel-state muted">Not open</span>
+            </div>
+            <button class="open-channel" disabled>Open channel</button>
+          </div>
+          <label
+            >Current channel<select class="channel-select" aria-label="Current channel"></select
+          ></label>
+          <code class="channel-id detail-id"></code>
+        </div>
+        <p class="panel-message message" role="status" hidden></p>
+        <div class="payment-section">
+          <h3>Receive</h3>
+          <form class="receive-form">
+            <label
+              >Amount to receive (CKB)
+              <div class="input-action">
+                <input
+                  class="receive-amount"
+                  inputmode="decimal"
+                  value="1"
+                  required
+                  aria-label="Amount to receive (CKB)"
+                /><button class="create-invoice" type="submit" disabled>Create invoice</button>
+              </div></label
+            >
+          </form>
+          <div class="invoice-output" hidden>
+            <label
+              >Invoice to receive payment<textarea
+                class="generated-invoice"
+                readonly
+                rows="3"
+              ></textarea>
+            </label>
+            <div class="invoice-actions">
+              <button class="copy-invoice">Copy invoice</button
+              ><button class="send-invoice">Fill other side</button>
+            </div>
+          </div>
+        </div>
+        <div class="payment-section">
+          <h3>Send</h3>
+          <form class="pay-form">
+            <label
+              >Invoice to pay<textarea
+                class="pay-invoice"
+                rows="3"
+                required
+                placeholder="Paste the recipient invoice…"
+              ></textarea>
+            </label>
+            <div class="pay-actions">
+              <span class="muted small">Maximum fee: 1 CKB</span
+              ><button class="pay" type="submit" disabled>Pay invoice</button>
+            </div>
+          </form>
+        </div>
+        <div class="history-section">
+          <h3>Payment history <span class="history-count muted small">0</span></h3>
+          <p class="history-empty muted small">No payments yet</p>
+          <ol class="history"></ol>
+        </div>
+        <details class="account-tools">
+          <summary>Account tools</summary>
+          <p class="muted small">
+            Closing the channel returns funds to the linked wallet. Registered users keep their
+            identities and cannot be deleted.
+          </p>
+          <div>
+            <button class="close-channel" disabled>Close channel</button
+            ><button class="delete-user danger">Delete unregistered user</button>
+          </div>
+        </details>
+      </div>
+    </template>
+    <script type="importmap">
+      { "imports": { "fiber-lsp-sdk": "/dist/index.js" } }
+    </script>
+    <script type="module" src="/example/browser/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,248 @@
+:root {
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color-scheme: dark;
+  color: #e5e5e5;
+  background: #181818;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 16px;
+}
+h1 {
+  font-size: 20px;
+  margin: 0;
+}
+#storage-notice {
+  font-size: 12px;
+  color: #aaa;
+}
+#storage-notice.plaintext {
+  color: #f0bd68;
+}
+h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  padding: 6px 8px;
+}
+button {
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #8ab4f8;
+  outline-offset: 2px;
+}
+label {
+  display: block;
+  margin-bottom: 12px;
+}
+input,
+select,
+textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 4px;
+}
+select {
+  appearance: none;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23aaa' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px 16px;
+}
+textarea {
+  resize: vertical;
+  font-family: monospace;
+}
+.toolbar,
+.tools,
+.status-line,
+.identity,
+.setup-row,
+.setup-row > div,
+.invoice-actions,
+.pay-actions,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.toolbar {
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #444;
+}
+.tools {
+  margin-left: auto;
+}
+.status-line {
+  flex-basis: 100%;
+  gap: 8px 16px;
+}
+.connection,
+code {
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+.accounts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+.account-panel {
+  min-width: 0;
+}
+.account-panel + .account-panel {
+  border-left: 1px solid #444;
+  padding-left: 24px;
+}
+.identity,
+.setup-row,
+.pay-actions {
+  justify-content: space-between;
+}
+.identity h3 {
+  margin: 0;
+}
+.wallet-strip {
+  margin: 8px 0;
+}
+.wallet-address {
+  display: block;
+}
+.balances > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.balances strong {
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.setup,
+.payment-section,
+.history-section,
+.account-tools {
+  border-top: 1px solid #444;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.setup-row + .detail-id + .setup-row {
+  margin-top: 12px;
+}
+.detail-id {
+  display: block;
+  margin-top: 4px;
+}
+.detail-id:empty {
+  display: none;
+}
+.input-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.input-action input {
+  margin: 0;
+}
+.history {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+}
+.history li {
+  border-top: 1px solid #444;
+  padding: 8px 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 8px;
+}
+.history strong,
+.payment-status {
+  overflow-wrap: anywhere;
+}
+.payment-hash {
+  grid-column: 1 / -1;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+.account-tools summary {
+  cursor: pointer;
+}
+.muted {
+  color: #aaa;
+}
+.small,
+small {
+  font-size: 12px;
+}
+.message {
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.error,
+.danger,
+.offline,
+.payment-status.failed {
+  color: #ff9b9b;
+}
+dialog {
+  color: inherit;
+  background: #202020;
+  width: min(460px, calc(100% - 32px));
+  padding: 16px;
+  border: 1px solid #666;
+}
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+[hidden] {
+  display: none !important;
+}
+@media (max-width: 640px) {
+  .accounts {
+    grid-template-columns: 1fr;
+  }
+  .account-panel + .account-panel {
+    border-left: 0;
+    border-top: 1px solid #444;
+    padding: 16px 0 0;
+  }
+  .tools {
+    margin-left: 0;
+  }
+}

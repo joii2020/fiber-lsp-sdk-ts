@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "paths": {
+      "/dist/*": ["./src/*"],
+      "/example/*": ["./examples/*"],
+      "fiber-lsp-sdk": ["./src/index.ts"]
+    }
+  },
+  "include": ["scripts/**/*.ts", "test/**/*.ts", "playwright.config.ts"]
+}
