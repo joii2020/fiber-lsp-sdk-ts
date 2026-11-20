@@ -1,6 +1,6 @@
 import { check } from './errors.js';
 import { canonical, fromHex, toHex } from './utils.js';
-import { closeTemplate, transactionHash, packScript } from './wasm.js';
+import { closeTemplate, transactionHash, packScript } from './wasm/index.js';
 import type { RecoverySummary, OpeningRecord, PaymentRecord } from './state.js';
 import type {
   ChainProvider,
@@ -64,7 +64,7 @@ export function verifyInvoice(
   network: NetworkConfig,
   asset: Script | undefined,
   now: number,
-): void {
+): asserts parsed is ParsedInvoice & { amount: bigint } {
   check(parsed.signed, 'VERIFICATION', 'Invoice must be signed');
   check(
     parsed.currency === network.currency,

@@ -14,7 +14,7 @@ import {
   result,
   script,
 } from './helpers.ts';
-import { signerAction } from '../dist/wasm.js';
+import { signerAction } from '../dist/wasm/index.js';
 const noChannels = (method: string) => {
   if (method === 'list_channels') return { channels: [] };
   throw Error(method);
@@ -86,15 +86,44 @@ test('storage lock pauses active runtime, preserves tenant list and resumes orig
   assert.deepEqual(await c.listChannels(), []);
   await lsp.cleanup(info.tenantId);
 });
-test('credential failure is persisted; refresh retains history and resumes same client', async () => {
+test('locking storage interrupts startup queued by client creation', async (t) => {
+  const storage = new MemoryStorage();
+  let requests = 0;
+  const { lsp } = make({
+    storage,
+    fetch: fetchRpc((method) => {
+      requests++;
+      return noChannels(method);
+    }),
+  });
+  const { tenantId } = await register(lsp);
+  const client = lsp.createClient(tenantId);
+  t.after(() => lsp.cleanup(tenantId));
+  const channels = client.listChannels();
+  storage.lock();
+  storage.unlock();
+  await assert.rejects(channels, (e) => e instanceof FiberLspError && e.code === 'LOCKED');
+  assert.equal(requests, 0);
+  assert.deepEqual(await client.listChannels(), []);
+});
+test('credential refresh after a WebSocket URL change retains the binding and resumes the client', async (t) => {
   let rejected = true;
   const { lsp } = make({
     fetch: async (url, o) =>
       rejected ? new Response('', { status: 401 }) : fetchRpc(noChannels)(url, o),
+    webSocketFactory: () => {
+      throw Error('WebSocket unavailable');
+    },
   });
   const info = await register(lsp);
+  t.after(() => lsp.cleanup(info.tenantId));
+  const wsUrl = 'ws://localhost:8119';
+  await lsp.setWebSocketUrl(info.tenantId, wsUrl);
   const c = lsp.createClient(info.tenantId);
   await assert.rejects(c.listChannels(), (e) => e instanceof FiberLspError && e.code === 'AUTH');
+  const [rejectedTenant] = await lsp.listTenants();
+  assert.equal(rejectedTenant.ready, true);
+  assert.equal(rejectedTenant.credentialStatus, 'refreshRequired');
   rejected = false;
   const refreshed = await lsp.setup({
     tenantId: info.tenantId,
@@ -104,9 +133,10 @@ test('credential failure is persisted; refresh retains history and resumes same 
     },
   });
   assert.equal(refreshed.publicKey, info.publicKey);
+  assert.equal(refreshed.credentialStatus, 'available');
+  assert.equal(refreshed.fiberLsp.wsUrl, wsUrl);
   assert.equal(lsp.createClient(info.tenantId), c);
   assert.deepEqual(await c.listChannels(), []);
-  await lsp.cleanup(info.tenantId);
 });
 test('cleanup interrupts an outstanding confirmation without waiting for the application', async () => {
   let confirming!: () => void;

@@ -25,7 +25,7 @@ interface TenantSession {
 /** Domain events let the UI choose its own messages without handling SDK subscriptions. */
 export type AccountEvent =
   | { type: 'tenant-selected' | 'channel-selected' }
-  | { type: 'channel-ready' | 'channel-closed' }
+  | { type: 'channel-closed' }
   | { type: 'payment-complete'; payment: PaymentInfo }
   | { type: 'history-save-failed' }
   | { type: 'error'; error: unknown };
@@ -70,17 +70,13 @@ export class AccountSession {
       ),
     );
   }
-  get invoice() {
-    return [...this.payments.values()]
-      .reverse()
-      .find((payment) => payment.direction === 'incoming' && payment.invoice)?.invoice;
-  }
   balance: string | null = null;
   private operating = false;
   get busy(): boolean {
     return this.operating;
   }
   private refreshing = false;
+  private balanceRefreshPending = false;
 
   private constructor(
     user: User,
@@ -133,7 +129,9 @@ export class AccountSession {
     }
   }
   private async loadTenants(): Promise<void> {
-    for (const tenant of await this.lsp.listTenants()) {
+    for (let tenant of await this.lsp.listTenants()) {
+      if (tenant.fiberLsp.wsUrl !== this.connection.fiberLsp.wsUrl)
+        tenant = await this.lsp.setWebSocketUrl(tenant.tenantId, this.connection.fiberLsp.wsUrl);
       const existing = this.sessions.get(tenant.tenantId);
       if (existing) {
         existing.tenant = tenant;
@@ -190,7 +188,12 @@ export class AccountSession {
     } finally {
       this.operating = false;
       this.callbacks.onChange(this);
+      if (this.balanceRefreshPending) this.queueBalanceRefresh();
     }
+  }
+  private queueBalanceRefresh(): void {
+    this.balanceRefreshPending = true;
+    if (!this.busy && !this.refreshing) void this.refresh(false);
   }
   private paymentKey(payment: PaymentInfo): string {
     return `${payment.direction}:${payment.paymentHash ?? payment.operationId}`;
@@ -200,6 +203,7 @@ export class AccountSession {
       prior = state.payments.get(key);
     if (prior && prior.version > payment.version) return;
     state.payments.set(key, payment);
+    if (prior && payment.complete && !prior.complete) this.queueBalanceRefresh();
     if (
       state === this.selected &&
       payment.channelId === this.channel?.channelId &&
@@ -218,10 +222,15 @@ export class AccountSession {
     const prior = state.channels.get(channel.operationId);
     if (prior && prior.version > channel.version) return;
     state.channels.set(channel.operationId, channel);
-    if (state === this.selected && state.selectedChannel === channel.operationId) {
-      if (channel.closed && !prior?.closed) this.emit({ type: 'channel-closed' });
-      else if (channel.ready && !prior?.ready) this.emit({ type: 'channel-ready' });
-    }
+    if (prior && ((channel.ready && !prior.ready) || (channel.closed && !prior.closed)))
+      this.queueBalanceRefresh();
+    if (
+      state === this.selected &&
+      state.selectedChannel === channel.operationId &&
+      channel.closed &&
+      !prior?.closed
+    )
+      this.emit({ type: 'channel-closed' });
     this.callbacks.onChange(this);
   }
   private attachClient(state = this.selected): FiberLspClient {
@@ -272,11 +281,11 @@ export class AccountSession {
     }
     this.attachClient();
   }
-  async openChannel(): Promise<void> {
+  async openChannel(fundingAmount?: bigint): Promise<void> {
     const state = this.selected!;
     try {
       const channel = await this.attachClient(state).openChannel({
-        wallet: fundingWallet(this.user.id, this.baseUrl),
+        wallet: fundingWallet(this.user.id, this.baseUrl, fundingAmount),
         newChannel: true,
       });
       this.updateChannel(channel, state);
@@ -287,7 +296,7 @@ export class AccountSession {
       throw error;
     }
   }
-  async createInvoice(amount: bigint): Promise<void> {
+  async createInvoice(amount: bigint): Promise<string> {
     const payment = await this.attachClient().createInvoice({
       channelId: this.channelId(),
       amount,
@@ -295,6 +304,7 @@ export class AccountSession {
       description: `Recipient: ${this.user.display}`,
     });
     this.updatePayment(payment);
+    return payment.invoice;
   }
   async payInvoice(invoice: string): Promise<PaymentInfo> {
     const client = this.attachClient();
@@ -325,9 +335,10 @@ export class AccountSession {
       }
     }
   }
-  async refresh(): Promise<void> {
+  async refresh(queryState = true): Promise<void> {
     if (this.refreshing || this.busy) return;
     this.refreshing = true;
+    this.balanceRefreshPending = false;
     try {
       this.balance = (
         await request<WalletBalance>(this.baseUrl, '/devnet/wallet', {
@@ -336,6 +347,7 @@ export class AccountSession {
         })
       ).capacity;
       for (const state of this.sessions.values()) {
+        if (!queryState) break;
         if (!state.client) continue;
         await this.refreshChannels(state);
         for (const entry of [...state.payments.values()]) {
@@ -352,6 +364,7 @@ export class AccountSession {
       this.emit({ type: 'error', error });
     } finally {
       this.refreshing = false;
+      if (this.balanceRefreshPending) this.queueBalanceRefresh();
     }
   }
   /** Explicit teardown, not a panel logout: cleanup stops processing for all of this user’s tenants. */

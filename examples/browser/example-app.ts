@@ -54,7 +54,7 @@ export class ExampleApp {
   }
 
   /** Includes accounts hidden by panel logout: their clients still process payments. */
-  async refreshAccounts(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((session) => session.refresh()));
+  async refreshAccounts(queryState = true): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.refresh(queryState)));
   }
 }

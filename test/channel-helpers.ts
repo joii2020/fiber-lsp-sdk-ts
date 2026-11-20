@@ -9,6 +9,7 @@ import type { TenantRecord } from '../src/state.js';
 import type { RpcParams } from './fixture-types.ts';
 interface HarnessOptions {
   storage?: Storage;
+  wsUrl?: string;
   sdk?: Partial<FiberLspOptions>;
   handler?: (method: string, params: RpcParams) => unknown | Promise<unknown>;
 }
@@ -16,11 +17,11 @@ export type ChannelHarness = Awaited<ReturnType<typeof channelHarness>>;
 import assert from 'node:assert/strict';
 import { MemoryStorage, fiberlsp, FiberLspEvent } from '../dist/index.js';
 import { fixture, seedFixture, result, fetchRpc } from './helpers.ts';
-import { transactionHash } from '../dist/wasm.js';
+import { transactionHash } from '../dist/wasm/index.js';
 export async function channelHarness(options: HarnessOptions = {}) {
   const f = await fixture();
   const storage = options.storage ?? new MemoryStorage();
-  const fiberLsp = await seedFixture(storage, f);
+  const fiberLsp = await seedFixture(storage, f, undefined, options.wsUrl);
   let submitted = false,
     index = 0;
   const calls: [string, RpcParams][] = [];
@@ -143,6 +144,7 @@ export async function channelHarness(options: HarnessOptions = {}) {
     wallet,
     provider,
     sdkOptions,
+    handleRpc: handler,
     getIndex: () => index,
     terms,
   };

@@ -2,6 +2,8 @@
 
 TypeScript SDK for Fiber LSP tenant registration, channel management, payments, and recovery.
 
+[中文接入指南](docs/integration.md) walks through the devnet demo and integrating the SDK into your own app.
+
 A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust `fiber-lsp-sdk` for validation, root identities, channel keys, MuSig2 signing, invoice parsing, and preimage release checks, pinned to Fiber commit `76307312e8de518c9a32074e6d16867c04de4f86`. TypeScript handles RPC, storage, events, recovery, and lifecycle management. The package builds ESM, type declarations, and WASM. It keeps `private: true` during development.
 
 ## Build and check
@@ -9,6 +11,8 @@ A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust
 Requirements: Node.js 24, pnpm 11.17.0, Rust, `wasm32-unknown-unknown`, and a matching wasm-bindgen CLI.
 
 The SDK, example app, build scripts, and tests use TypeScript. Shell scripts manage the devnet. `pnpm typecheck` checks all handwritten TypeScript. Node.js 24 runs tool and backend `.ts` files directly; `tsc` compiles the browser example. The Rust/WASM bridge reuses the existing signing and validation code.
+
+`wasm/` contains the Rust crate and its build script, which generate bindings in `wasm/pkg/`. `src/wasm/` contains the SDK's TypeScript adapter for Node.js and browsers. The SDK ships the adapter and generated bindings together in `dist/wasm/`.
 
 `packageManager` pins the pnpm version, and `pnpm-lock.yaml` locks JavaScript dependencies. Use `pnpm install --frozen-lockfile` in CI.
 
@@ -19,8 +23,6 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 pnpm build
 pnpm typecheck
 pnpm test
-pnpm exec playwright install chromium
-pnpm test:browser
 ```
 
 The first build fetches Rust dependencies from the pinned commit. Later builds reuse WASM based on a source fingerprint and rebuild it when the signing bridge changes. To use a local copy of the matching Fiber source:
@@ -49,13 +51,15 @@ const tenant = await lsp.setup({
   fiberLsp: { rpcUrl, wsUrl, nodePublicKey, network },
   registration: { register: (params) => app.registerTenant(params) },
 });
-const client = lsp.createClient(tenant.tenantId);
+const client = lsp.createClient(tenant.tenantId); // Starts background recovery.
 const cancel = client.on(FiberLspEvent.ChannelChanged, app.updateChannel);
 client.on(FiberLspEvent.Error, app.showError);
 app.showChannels(await client.listChannels());
 ```
 
 The registration backend returns the raw `{ tenant, access_token }`. The SDK saves the local identity and proof before sending the request. It marks the tenant `ready` only after checking the tenant ID, root public key, invoice public key, and nonempty token. If registration fails, find the pending record with `listTenants()` and resume with the same `tenantId`. Existing tenants can create a client directly. Pass `refresh: true` to `setup` to force a token refresh; a 401/403 response automatically marks the token for refresh.
+
+`TenantInfo.ready` records that registration finished. `credentialStatus` is `unregistered` before registration, `available` after registration or refresh, and `refreshRequired` after the LSP rejects the credential. When resuming or refreshing an existing tenant, `setup` checks the saved HTTP RPC URL, LSP public key, and network. Use `setWebSocketUrl` to update the saved WebSocket endpoint.
 
 For separate registration steps, use `beginRegistration({ tenantId?, fiberLsp })` and `finishRegistration(tenantId, result)`. Each attempt creates a new request ID and signature. The separate `debugRegisterTenant({ rpcUrl, token, params })` export is available for controlled local debugging. Its operator token is used only for that request. Production web apps register through the provider's backend.
 
@@ -97,6 +101,8 @@ const channel = await client.openChannel({ wallet });
 
 `maxWalletDebit` is always in CKB shannons. `fundingAmount` separately limits the authorized UDT amount. `maxFundingFee` also caps the cooperative close fee. The local party currently pays the full close fee. Closing uses the `shutdownScript` saved at channel opening and defaults to `fundingFeeRate`; set `closeFeeRate` to override it.
 
+In `onConfirm`, check `request.kind` to access the typed details for that operation. Use `feeBudget` for the maximum payment fee and the UDT script to determine the asset for displayed amounts. The callback runs within the tenant's operation lock. It can read saved records with `listPayments()`. Wait for the operation to finish before calling methods that reconcile state, such as `listChannels()` or `getPayment()`.
+
 Opening returns an operation ID and current state. `ready: true` requires server readiness, trusted on-chain funding checks, and a complete local recovery signature. If a wallet is missing during opening, `ChannelInfo.needsWallet` is `true`; call `openChannel({ wallet })` again to resume the same operation. Recovery can resubmit a signed funding transaction and keeps its original hash if the result is unknown. Use `openChannel({ wallet, newChannel: true })` to add another channel under the same tenant. An unfinished opening is resumed first, using its original signer and terms. Without `newChannel`, calling open again returns the latest channel or resumes an unfinished opening. Failed or closed openings allow a fresh channel after user approval.
 
 ```typescript
@@ -110,7 +116,7 @@ await client.closeChannel(channel.channelId!);
 const invoice = await client.createInvoice({ channelId, amount: 1000n });
 app.showInvoice(invoice.invoice);
 
-const parsed = client.parseInvoice(invoiceString); // Synchronous and local; no network or background startup.
+const parsed = client.parseInvoice(invoiceString); // Synchronous and local.
 await client.payInvoice({ channelId, invoice: invoiceString, maxFee: 10n });
 await client.getPayment({ paymentHash: parsed.paymentHash, direction: 'outgoing' });
 await client.getPayment({ paymentHash: invoice.paymentHash, direction: 'incoming' });
@@ -118,15 +124,23 @@ await client.getPayment({ paymentHash: invoice.paymentHash, direction: 'incoming
 await client.keysend({ channelId, targetPublicKey, amount: 1000n, maxFee: 10n });
 ```
 
-Before paying an invoice, the SDK saves the hash, exact channel amount, fee budget, authorization deadline, and commitment baseline. The trampoline fee cap is rounded up from the per-thousand rate, then limited to `maxFee`. Payments directly to the LSP node add no trampoline fee. Incoming payments use hold invoices with preimages kept by the client. Rust checks the full local commitment signature, valid funding, and safe timing before releasing a preimage. `Received`, `Success`, and `Paid` retain their server meanings. `complete` becomes `true` only after local TLC acceptance, removal, balance, and chain checks pass.
+Use `await client.listPayments()` to load saved payments and invoices while the client is recovering or offline. The method reads local storage. A pending keysend can have `paymentHash: null` while the SDK looks for its hash. Merge the list with `PaymentChanged` and `InvoiceChanged` events by `operationId`, keeping the entry with the higher `version`.
+
+Before paying an invoice, the SDK saves the hash, exact channel amount, fee budget, authorization deadline, and commitment baseline. The trampoline fee cap is rounded up from the per-thousand rate, then limited to `maxFee`. Payments directly to the LSP node add no trampoline fee. Incoming payments use hold invoices with preimages kept by the client. Rust checks the full local commitment signature, valid funding, and safe timing before releasing a preimage. To confirm settlement, check both `complete` and `status`. A successful outgoing payment requires `Success` and a successful incoming payment requires `Paid`. Failed or expired payments can also reach `complete` after local reconciliation.
 
 Keysend uses the server's `send_payment` without `invoice` or `payment_hash`. Before sending, the SDK saves a random correlation ID in a custom record. If the response is lost, it pages through `list_payments`, finds the hash by that ID, and creates the authorization. If no match or multiple matches are found, it keeps the state unknown and stops resending. This recovery requires the server to retain and return custom records. There is no separate query API for incoming keysend payments.
 
 A tenant can have multiple active channels. Choose a `channelId` for invoices, payments, and closing. This version processes payments one at a time per tenant. Each payment must pass verification before the next starts, so exact amounts match both balance baselines. MPP invoices are rejected. A missing record in the requested direction returns `null`, while local records remain available for recovery. Other errors are thrown. Server records without local authorization are reported as missing data, not marked as verified.
 
+For invoices, keep one channel per asset eligible for delivery while an invoice is outstanding. The LSP chooses the delivery channel when payment arrives. Before issuing an invoice, `createInvoice` checks the node's channel list and returns `CONFLICT` if the selected channel is unavailable or another channel for that asset could receive the payment. Offline and opening channels can become eligible. Channels reported as closed or shutting down are excluded.
+
 Events include `ChannelChanged`, `BalanceChanged`, `PaymentChanged`, `InvoiceChanged`, `ConnectionChanged`, and `Error`. Queries and events share result types, and state records carry an increasing `version`. Subscribe before querying. Listeners share a connection, and cancellation is safe to repeat. After the last page unsubscribes, signing continues for started tenants until `cleanup` is called.
 
-With `wsUrl` configured, the SDK subscribes to `channel_signing`. Notifications trigger independent queries and checks; polling covers states without notifications. Node.js uses the `ws` Authorization header; browsers use the `fiber-rpc` and token subprotocols. The WebSocket URL is never inferred from the HTTP URL. Reconnection restores subscriptions and queries existing operations. Token refresh rebuilds the connection. Without WebSocket configuration, the SDK uses HTTP.
+With `wsUrl` configured, the SDK subscribes to `channel_signing` and reuses that WebSocket for JSON-RPC queries and submissions. Pushed signing requests go directly through the Rust signer's verification and durable submission path, without querying `get_channel_signing_status` again. Notifications preempt the polling timer, and repeated completed requests are deduplicated. Reconnection restores subscriptions, replays pending requests, and reconciles existing operations. Node.js uses the `ws` Authorization header; browsers use the `fiber-rpc` and token subprotocols. Token refresh rebuilds the connection.
+
+The server currently pushes signing status, not full channel or payment state. The SDK still reconciles these states and checks trusted CKB data. Idle WebSocket clients reconcile every `webSocketPollIntervalMs` (default 15 seconds); opening, closing, and pending payments use `pollIntervalMs` (default 1.5 seconds). Signing-status queries serve as a periodic fallback. Without a configured or available WebSocket, requests use HTTP. A request already sent over WebSocket is never automatically repeated over HTTP after a timeout or disconnect, because a write may already have succeeded.
+
+The WebSocket URL is never inferred from the HTTP URL. Existing HTTP tenants can enable or change it without registering again: `await lsp.setWebSocketUrl(tenantId, wsUrl)`. Omit the URL to return to HTTP; the tenant identity, network, and credential are retained.
 
 ## Storage, recovery, and cleanup
 
@@ -147,12 +161,14 @@ Custom persistent storage must follow the [Storage](src/storage.ts) interface: b
 ```typescript
 const [tenant] = await lsp.listTenants();
 const client = lsp.createClient(tenant.tenantId);
-await client.listChannels(); // Starts recovery on demand.
+await client.listChannels(); // Waits for initial recovery, then reconciles channels.
 cancel(); // A page leaving only cancels its own listener.
 await lsp.cleanup(tenant.tenantId); // Stops the tenant's entire client.
 ```
 
-Repeated `createClient` calls on the same manager return the same object. `cleanup` combines concurrent cleanup calls, immediately rejects new operations, aborts network waits, closes subscriptions, removes all listeners, and waits for in-flight work to finish. Other tenants and saved data remain intact. The old client then returns `CLOSED`; a new client can be created after cleanup succeeds. Locking storage pauses affected tenants. After unlocking, query the original client to resume. Invalid tokens require registration with the same identity. Network timeouts never create new identities or repeat payments automatically.
+`createClient` returns synchronously and starts background recovery for a new client. Recovery can invoke `onUnlock` and reports background failures through the `Error` event. Repeated calls on the same manager return the same object. `cleanup` combines concurrent cleanup calls, immediately rejects new operations, aborts network waits, closes subscriptions, removes all listeners, and waits for in-flight work to finish. Other tenants and saved data remain intact. The old client then returns `CLOSED`; a new client can be created after cleanup succeeds. Locking storage pauses affected tenants. After unlocking, call `client.listChannels()` to resume. Invalid tokens require registration with the same identity. Network timeouts never create new identities or repeat payments automatically.
+
+For a client created by the manager, `client.cleanup()` and `lsp.cleanup(tenantId)` share the same shutdown. Either call releases the cached client once cleanup finishes.
 
 ## Tests and examples
 
@@ -177,9 +193,9 @@ The page header shows CKB/LSP connection status, block height, user count, and a
 
 Demo steps:
 
-1. Click “Add user”, enter a unique `name` and a display name (`display`), and select a preset offckb account. Bound accounts and the LSP funding account are disabled; the backend also rejects duplicate bindings.
+1. Click “Add user” and enter a unique `name`. The display name follows it until you edit the display name directly. The form selects the lowest-numbered available offckb account by default, and you can select another available account. The backend rejects duplicate bindings.
 2. Select a user in each panel. No login password is needed. Wallets use the bound offckb accounts' existing CKB without a faucet.
-3. Click “Register tenant”, then “Open channel” in each panel. The default local contribution is 1000 CKB, or the LSP minimum if higher. The LSP contribution comes from the current node configuration. Confirm funding and wait for “Ready”. The example automatically approves protocol signatures verified by the SDK; funding, payment, and channel closing each require confirmation.
+3. Click “Register tenant”, then “Open channel” in each panel. Enter a local contribution in CKB (default 1000), confirm, and wait for “Ready”. The LSP sets the minimum local contribution and supplies its own contribution from the current node configuration. The example automatically approves protocol signatures verified by the SDK. Funding, payment, and channel closing each require confirmation.
 4. Enter a CKB amount on the receiving side, create an invoice, and copy it to the payer's input, or click “Fill other side”. Click “Pay invoice” on the paying side. Keep the page open until both records show “Complete” and check the balance changes. The maximum payment fee is 1 CKB. Amounts support up to 8 decimal places.
 5. Refreshing restores both selected users, tenant identities, and payment records for the current tab. Close channels through “Account tools”; on-chain balances update after refunds are confirmed. Users without tenants can be deleted to release their bindings. Registered users keep their identities and bindings to protect recovery data.
 
@@ -187,7 +203,7 @@ User profiles are stored in `.devnet/example-users.json` (override with `EXAMPLE
 
 Tenant keys, signing snapshots, and operation state are stored per user in IndexedDB. HTTPS/localhost uses the SDK's `BrowserStorage` to encrypt root private keys; plain HTTP uses the example's plaintext storage with a `-plaintext` database suffix. Payment records for display are stored in localStorage. For a local experience without passwords, the example uses a fixed, derivable development unlock password. **It provides no password protection and is for devnet use only.** offckb wallet private keys are read only for backend signing; they are never written to the user JSON or sent to the browser. Clearing browser data loses tenant keys, which the JSON user file cannot restore. Use the same browser and site address (`localhost` and `127.0.0.1` are different origins). Leaving one panel only hides it; started clients keep processing pending payments.
 
-See [examples/README.md](examples/README.md) for integration details. Start with the minimal registration flow in [examples/node.ts](examples/node.ts), then read the full lifecycle in [AccountSession](examples/browser/account-session.ts).
+See [examples/README.md](examples/README.md) for integration details and [AccountSession](examples/browser/account-session.ts) for the SDK lifecycle.
 
 Directory layout:
 
@@ -195,16 +211,12 @@ Directory layout:
 - `examples/shared/`: shared types and adapters for registration, trusted chain queries, and funding wallets.
 - `examples/server/`: TypeScript HTTP backend, trusted configuration, JSON user storage, and offckb wallet verification and signing.
 - `examples/browser.html`, `examples/styles.css`: page structure and styles; the SDK loads through an import map.
-- `examples/node.ts`: minimal Node.js integration with an identity stored in memory.
 - `examples/devnet/`: offckb scripts to initialize, start, stop, clean, and reset the local environment.
 
-`pnpm example` builds the SDK into `dist/`, compiles browser code into `.example/`, and runs the TypeScript backend directly. After browser changes, run `pnpm build:example` and refresh. After backend changes, restart the example. App source files use `.ts`; environment scripts use `.sh`. The SDK's `.js` import suffixes and generated JavaScript follow ESM build conventions.
+`pnpm example` builds the SDK into `dist/`, compiles browser code into `.example/`, and runs the TypeScript backend directly. After browser changes, run `pnpm exec tsc -p examples/tsconfig.browser.json` and refresh. After backend changes, restart the example. App source files use `.ts`; environment scripts use `.sh`. The SDK's `.js` import suffixes and generated JavaScript follow ESM build conventions.
 
-offckb defaults to CKB port `8114`, LSP HTTP `21716`, and WebSocket `21717`. The example page uses `8008`. `pnpm example:browser` is equivalent to `pnpm example`. The browser uses same-origin HTTP polling, so node CORS needs no extra setup. Browser tests use a separate static server on `4173` and do not require a running devnet.
+offckb defaults to CKB port `8114`, LSP HTTP `21716`, and WebSocket `21717`. The example page uses `8008`. `pnpm example:browser` is equivalent to `pnpm example`. The browser uses the same-origin `/devnet/ws` relay for subscriptions and RPC, with `/devnet/rpc` as the HTTP fallback, so node CORS needs no extra setup. The relay forwards only the browser's tenant credential. Existing browser tenants automatically adopt the configured WebSocket URL.
 
-- `pnpm test`: Node.js tests cover real Rust invoice and MuSig2 validation, channel opening and cooperative close, tamper rejection, lost payment responses, keysend correlation, recovery, cleanup, WebSocket reconnection, transactions, and encrypted storage.
-- `pnpm test:browser`: Chromium tests cover WASM, real HTTP CORS and WebSocket subprotocols, channel signing, payment recovery, IndexedDB, page refresh, password changes, and locking across tabs.
-- `FIBER_SOURCE=../fiber pnpm test:fixtures`: generates local RPC fixtures from the pinned Rust SDK. Fixture private keys are for tests only and must not hold real funds.
-- `pnpm test:integration`: skipped by default. Set `FIBER_LSP_TEST_ADAPTER=/absolute/path/adapter.ts` to run real registration, channel opening, hold invoice receipt, and closing with an app-provided local test chain, funding wallet, and payer. See [test/integration/live.test.ts](test/integration/live.test.ts) for the adapter contract.
+`pnpm test` runs the Node.js suite. It covers real Rust invoice and MuSig2 validation, channel opening and cooperative close, tamper rejection, lost payment responses, keysend correlation, recovery, cleanup, WebSocket reconnection, transactions, and encrypted storage. The tests use Rust-generated fixtures with local RPC and WebSocket servers. Fixture private keys are for tests only and must not hold real funds.
 
-Current automated tests use valid Rust-generated transactions and signing requests with local RPC/WebSocket servers. The examples support manual checks of payments between two users on a real LSP. Callers still provide the general `test:integration` adapter. Watchtower and on-chain withdrawals after forced closure are outside this version's public API.
+The examples support manual checks of payments between two users on a real LSP. Watchtower and on-chain withdrawals after forced closure are outside this version's public API.

@@ -92,6 +92,7 @@ export async function readDevnetConfig(): Promise<DevnetConfig> {
     accounts: reserveExampleAccounts(accounts, info.default_funding_lock_script),
     wallet: {
       fundingAmount: (minimum > 1000n * CKB ? minimum : 1000n * CKB).toString(),
+      minFundingAmount: minimum.toString(),
       remoteFundingAmount: remoteAmount.toString(),
       remoteLock: info.default_funding_lock_script,
       defaultLockDep: await defaultLockDep(ckbRpcUrl, accounts[0]!.lockScript),

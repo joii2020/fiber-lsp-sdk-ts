@@ -10,12 +10,8 @@ coverage/
 .DS_Store
 target/
 wasm/pkg/
-src/wasm/*
-!src/wasm/*.d.ts
 test-results/
-playwright-report/
 **/target/
-test/fixtures-builder/Cargo.lock
 
 .example/
 .vscode/

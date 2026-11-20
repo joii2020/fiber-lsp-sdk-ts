@@ -6,7 +6,7 @@ import test from 'node:test';
 import { fiberlsp } from '../dist/index.js';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers.ts';
-import { transactionHash } from '../dist/wasm.js';
+import { transactionHash } from '../dist/wasm/index.js';
 import { channelHarness } from './channel-helpers.ts';
 test('opens a frozen proposal, verifies/signs real MuSig2 requests, and saves before submit', async () => {
   const h = await channelHarness();

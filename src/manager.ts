@@ -10,7 +10,7 @@ import {
   pubkey,
   toHex,
 } from './utils.js';
-import { createIdentity, signerAction, packScript, validatePublicKey } from './wasm.js';
+import { createIdentity, signerAction, packScript, validatePublicKey } from './wasm/index.js';
 import { recordKey } from './state.js';
 import type { TenantRecord } from './state.js';
 import type {
@@ -103,10 +103,22 @@ export function validateRecord(r: TenantRecord | null, id: string): asserts r is
       'Tenant credential or identity is missing',
     );
 }
-/** SDK manager. Construction and createClient never connect or request passwords. */
+function sameLspBinding(saved: FiberLspConfig, supplied: FiberLspConfig): boolean {
+  return (
+    saved.rpcUrl === supplied.rpcUrl &&
+    saved.nodePublicKey === supplied.nodePublicKey &&
+    canonical(saved.network) === canonical(supplied.network)
+  );
+}
+function tenantInfo(record: TenantRecord): TenantInfo {
+  let credentialStatus: TenantInfo['credentialStatus'] = 'unregistered';
+  if (record.info.ready) credentialStatus = record.authInvalid ? 'refreshRequired' : 'available';
+  return { ...clone(record.info), credentialStatus };
+}
+/** Registry and lifecycle manager for tenant clients. */
 export class fiberlsp {
   private clients = new Map<string, FiberLspClient>();
-  private cleaning = new Map<string, Promise<void>>();
+  private cleaning = new Set<string>();
   readonly options: FiberLspOptions;
   constructor(options: FiberLspOptions) {
     check(
@@ -120,6 +132,13 @@ export class fiberlsp {
       'INVALID_ARGUMENT',
       'Invalid poll interval',
     );
+    check(
+      options.webSocketPollIntervalMs === undefined ||
+        (Number.isSafeInteger(options.webSocketPollIntervalMs) &&
+          options.webSocketPollIntervalMs >= 10),
+      'INVALID_ARGUMENT',
+      'Invalid WebSocket poll interval',
+    );
     this.options = options;
   }
   private now(): number {
@@ -131,7 +150,7 @@ export class fiberlsp {
       const id = key.slice(7);
       tenantId(id);
       validateRecord(value, id);
-      return clone(value.info);
+      return tenantInfo(value);
     });
   }
   private async save(r: TenantRecord): Promise<void> {
@@ -185,7 +204,7 @@ export class fiberlsp {
       const r = await this.options.storage.get<TenantRecord>(recordKey(selected));
       validateRecord(r, selected);
       check(
-        canonical(r.info.fiberLsp) === canonical(config.fiberLsp),
+        sameLspBinding(r.info.fiberLsp, config.fiberLsp),
         'CONFLICT',
         'A tenant cannot change its LSP or network',
       );
@@ -207,7 +226,7 @@ export class fiberlsp {
         );
         const result = await signerAction<RegisterLspTenantParams>(root, r.signer, {
           action: 'beginRegistration',
-          nodePublicKey: config.fiberLsp.nodePublicKey,
+          nodePublicKey: r.info.fiberLsp.nodePublicKey,
           requestId: bytesToHex(randomBytes()),
           now: toHex(this.now()),
         });
@@ -263,7 +282,7 @@ export class fiberlsp {
         r.authInvalid = false;
         delete r.registration;
         await this.save(r);
-        return clone(r.info);
+        return tenantInfo(r);
       } finally {
         stopWatching();
         root.fill(0);
@@ -283,41 +302,57 @@ export class fiberlsp {
       const r = await this.options.storage.get<TenantRecord>(recordKey(config.tenantId));
       validateRecord(r, config.tenantId);
       check(
-        canonical(r.info.fiberLsp) === canonical(config.fiberLsp),
+        sameLspBinding(r.info.fiberLsp, config.fiberLsp),
         'CONFLICT',
         'A tenant cannot change its LSP or network',
       );
-      if (r.info.ready && !r.authInvalid && !config.refresh) return clone(r.info);
+      if (r.info.ready && !r.authInvalid && !config.refresh) return tenantInfo(r);
     }
     const pending = await this.beginRegistration(config);
     const result = await config.registration.register(pending.params);
     return this.finishRegistration(pending.tenantId, result);
   }
+  /** Change only the optional WebSocket transport, retaining the tenant identity and credential. */
+  async setWebSocketUrl(id: string, wsUrl?: string): Promise<TenantInfo> {
+    tenantId(id);
+    const info = await this.options.storage.withLock(`tenant/${id}`, async () => {
+      const r = await this.options.storage.get<TenantRecord>(recordKey(id));
+      validateRecord(r, id);
+      const config = clone(r.info.fiberLsp);
+      if (wsUrl === undefined) delete config.wsUrl;
+      else config.wsUrl = wsUrl;
+      validateConfig(config);
+      if (r.info.fiberLsp.wsUrl !== wsUrl) {
+        r.info.fiberLsp = config;
+        await this.save(r);
+        this.clients.get(id)?.credentialsChanged();
+      }
+      return tenantInfo(r);
+    });
+    return info;
+  }
+  /** Return the cached client, or create one and start its background recovery. */
   createClient(id: string): FiberLspClient {
     tenantId(id);
     check(!this.cleaning.has(id), 'CLEANING_UP', 'Tenant client is being cleaned up');
     let client = this.clients.get(id);
     if (!client) {
-      client = new FiberLspClient(id, this.options);
+      client = new FiberLspClient(id, this.options, (completion) => {
+        this.cleaning.add(id);
+        void completion.then(
+          () => {
+            this.clients.delete(id);
+            this.cleaning.delete(id);
+          },
+          () => this.cleaning.delete(id),
+        );
+      });
       this.clients.set(id, client);
     }
     return client;
   }
   cleanup(id: string): Promise<void> {
     tenantId(id);
-    const running = this.cleaning.get(id);
-    if (running) return running;
-    const client = this.clients.get(id);
-    if (!client) return Promise.resolve();
-    const promise = client
-      .cleanup()
-      .then(() => {
-        this.clients.delete(id);
-      })
-      .finally(() => {
-        this.cleaning.delete(id);
-      });
-    this.cleaning.set(id, promise);
-    return promise;
+    return this.clients.get(id)?.cleanup() ?? Promise.resolve();
   }
 }

@@ -17,7 +17,11 @@ sh examples/start.sh
 
 The server listens on all interfaces at `http://server-ip-or-domain:8008`, or locally at <http://127.0.0.1:8008>. API requests enforce same-origin access using the request Host. HTTPS or localhost uses the SDK's encrypted storage. Plain HTTP uses the example's plaintext IndexedDB storage and shows “HTTP · Private keys stored in plaintext, for testing only” beside the title. This mode is for devnet demos; use HTTPS in production.
 
+When the LSP has a WebSocket listener, the browser connects through the same-origin `/devnet/ws` relay. Signing pushes drive the SDK directly; queries and submissions reuse the connection. The relay forwards the tenant subprotocol credential and never uses the operator token. Existing tenants adopt this transport when restored. HTTP remains available when WebSocket is absent or disconnected. An HTTPS reverse proxy must forward WebSocket upgrades for `/devnet/ws`.
+
 Add two users, each bound to an unused wallet from offckb #6–#9 (the same range as fiber-lab users 1–4). Select a user in each panel, register tenants, open channels, then create and pay invoices. Accounts use the preset wallets' existing CKB without a faucet.
+
+Choose **Receive**, enter an amount in CKB, and select **Create invoice**. Copy the new invoice or use **Send to [account name]** to open the other panel’s **Send** dialog with the invoice filled in. To pay an invoice from elsewhere, open **Send** and paste it. **Payment activity** below the buttons updates automatically for the selected channel.
 
 Node1, Node2, and Node3 (LSP) use #3, #4, and #5. When adding users, preallocated test accounts #0–#2, node wallets, and all other accounts outside #6–#9 are disabled. The backend also rejects these bindings. #19 is used for contract deployment and test UDT issuance. When sharing a devnet with fiber-lab, wallet balances for #6–#9 are shared too.
 
@@ -28,13 +32,13 @@ Run `sh examples/devnet/stop.sh` when done. Use `sh examples/devnet/start.sh` ne
 ```sh
 pnpm typecheck      # Check the SDK, examples, build scripts, and all tests.
 pnpm test           # Run Node tests.
-pnpm test:browser   # Build examples and run browser tests; static test server uses port 4173.
-pnpm example:node   # Register and query with an in-memory identity while the example backend runs.
 ```
 
-`pnpm example` builds the SDK into `dist/`, compiles browser TypeScript into `.example/`, then runs `server/index.ts`. Node 24 strips type annotations without checking types, so run `pnpm typecheck` after changes. For browser changes, rerun `pnpm build:example` and refresh. For backend changes, restart `pnpm example`.
+`pnpm example` builds the SDK into `dist/`, compiles browser TypeScript into `.example/`, then runs `server/index.ts`. Node 24 strips type annotations without checking types, so run `pnpm typecheck` after changes. For browser changes, run `pnpm exec tsc -p examples/tsconfig.browser.json` and refresh. For backend changes, restart `pnpm example`.
 
 ## Where to start
+
+The [Chinese integration guide](../docs/integration.md) covers the SDK call flow and the interfaces your app supplies.
 
 **For SDK usage, start with [browser/account-session.ts](browser/account-session.ts).** It covers setup, identity recovery, registration, event subscriptions, channel opening, payments, and cleanup. No page code is needed first.
 
@@ -44,10 +48,9 @@ The browser example has three layers: `app.ts` handles the UI, `example-app.ts` 
 
 | File                                                     | Purpose                                                                                                                    |
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| [node.ts](node.ts)                                       | Minimal `setup → createClient → listChannels → cleanup` flow                                                               |
 | [browser/account-session.ts](browser/account-session.ts) | Full SDK integration: per-user storage, registration, events, channels, payments, recovery, and cleanup; no DOM dependency |
 | [browser/example-app.ts](browser/example-app.ts)         | User creation, deletion, and loading; network status, session reuse, and background refresh; no DOM dependency             |
-| [shared/connection.ts](shared/connection.ts)             | Implements the `TenantRegistration`, `ChainProvider`, and `FundingWallet` adapters                                         |
+| [shared/connection.ts](shared/connection.ts)             | Configures browser RPC and implements the `ChainProvider` and `FundingWallet` adapters                                      |
 | [shared/types.ts](shared/types.ts)                       | Shared user, connection, and JSON DTO types; amounts are sent as strings                                                   |
 | [browser/app.ts](browser/app.ts)                         | Account panels, forms, confirmations, messages, and rendering; no direct SDK or backend calls                              |
 | [browser/amount.ts](browser/amount.ts)                   | Exact CKB/shannon conversion without floating-point arithmetic                                                             |
@@ -85,7 +88,7 @@ try {
 }
 ```
 
-`run()` sets a read-only `busy` state during an operation to prevent duplicate submissions and pause new refreshes. Errors reach the caller, and the busy state clears when the operation ends. SDK background events pass through callbacks; the session module does not choose messages or show confirmation dialogs. Browser storage still uses the example's `storage.ts` and Web Storage. See `node.ts` for a minimal Node integration.
+`run()` sets a read-only `busy` state during an operation to prevent duplicate submissions and pause new refreshes. Errors reach the caller, and the busy state clears when the operation ends. SDK background events pass through callbacks; the session module does not choose messages or show confirmation dialogs. Browser storage still uses the example's `storage.ts` and Web Storage.
 
 ### 1. Create a persistent identity for each user
 
@@ -113,7 +116,7 @@ const result = await registerTenant(proof, {
 // Return result (tenant + access_token) to the SDK to finish registration or token refresh.
 ```
 
-`tenantBindings` only needs the file's `bindRoot()` and `bindTenant()` methods and can use your own database. The example's `UserStore` implements both. Omit `user` when no app user binding is needed, as `node.ts` does. `readToken()` runs for each request, so it can read the latest operator token from a file or secret service.
+`tenantBindings` only needs the file's `bindRoot()` and `bindTenant()` methods and can use your own database. The example's `UserStore` implements both. Omit `user` when no app user binding is needed. `readToken()` runs for each request, so it can read the latest operator token from a file or secret service.
 
 The module first saves the root public key binding, requests an LSP token, verifies and saves the tenant binding, then returns the result. Binding operations should avoid duplicates. `bindTenant()` should verify that the returned root public key belongs to the user. If a step fails, keep existing bindings and retry with the same identity. The module does not depend on HTTP request objects. The host backend handles HTTP validation, app user authentication, and error responses. This example uses the privileged registration API of a controlled devnet.
 
@@ -137,6 +140,8 @@ The example backend uses CCC for offckb default lock signing. Replace this adapt
 
 `attachClient()` subscribes to `ChannelChanged`, `BalanceChanged`, `PaymentChanged`, `InvoiceChanged`, and `Error` before querying. The UI merges state by increasing `version`.
 
+The SDK handles background reconciliation; the page has no global refresh timer. Initial loading and manual refresh check network status, users, wallet balances, and SDK state. Channel readiness, verified closure, and completed payments trigger wallet balance updates, with updates deferred while an operation or refresh is in progress. Signing notifications are immediate, idle WebSocket reconciliation defaults to 15 seconds, and unfinished operations use the example's one-second interval to discover state changes without signing notifications. Trusted CKB checks remain independent of the LSP transport. Use manual refresh to discover unrelated on-chain transfers or user changes made in another page.
+
 Each tenant can open multiple channels through “Add channel” and switch between them with “Current channel”. `AccountSession.channels` lists the selected tenant’s channels; `selectChannel(operationId)` selects one, including an opening that does not yet have a channel ID. The selected channel is remembered per tenant in sessionStorage. Balances, invoices, payment history, and closing use the selected channel. Background updates keep all channels current without changing the selection. An unfinished opening is resumed before another channel is created.
 
 A completed open call does not mean the channel is usable. Enable payments only when `ChannelInfo.ready` is true. Both channels need liquidity in the required direction. Payments use `createInvoice()` and `payInvoice()`. The UI shows completion only when `PaymentInfo.complete` is true; server `Success` / `Paid` states alone are insufficient.
@@ -159,4 +164,4 @@ Leaving either panel only changes the display. Started clients continue receivin
 
 This is a local devnet demo without login passwords. Its development unlock password is derivable and does not protect production keys. Use the same browser and origin; clearing IndexedDB loses tenant identities. Only unregistered users can be deleted. Registered identities and wallet bindings are retained.
 
-See [test/integration/adapter.ts](../test/integration/adapter.ts) for the real-chain test adapter contract. The Rust/WASM bridge and Rust fixture generator reuse the pinned signing and validation code. The cryptographic protocol is not reimplemented in TypeScript.
+The Rust/WASM bridge reuses the pinned Fiber SDK for signing and validation.

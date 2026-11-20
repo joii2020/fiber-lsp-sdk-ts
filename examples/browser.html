@@ -60,24 +60,99 @@
         </div>
       </form>
     </dialog>
+    <dialog id="open-channel-dialog" aria-labelledby="open-channel-title">
+      <form id="open-channel-form">
+        <h2 id="open-channel-title">Open channel</h2>
+        <p id="open-channel-wallet" class="muted"></p>
+        <label>
+          Funding amount (CKB)
+          <input
+            name="fundingAmount"
+            inputmode="decimal"
+            value="1000"
+            autocomplete="off"
+            required
+            autofocus
+          />
+        </label>
+        <p id="open-channel-error" class="message error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-open-channel">Cancel</button>
+          <button type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="receive-dialog" aria-labelledby="receive-title">
+      <h2 id="receive-title">Receive</h2>
+      <p id="receive-account" class="dialog-account muted small"></p>
+      <form id="receive-form">
+        <label>
+          Amount to receive (CKB)
+          <input class="receive-amount" inputmode="decimal" required autofocus />
+        </label>
+        <p id="receive-error" class="message error" role="alert" hidden></p>
+        <div class="invoice-output" hidden>
+          <label>
+            Invoice
+            <textarea class="generated-invoice" readonly rows="3"></textarea>
+          </label>
+          <div class="invoice-actions">
+            <button type="button" class="copy-invoice">Copy invoice</button>
+            <button type="button" class="send-invoice" disabled>Send to other account</button>
+          </div>
+          <p class="muted small">Keep this page open to receive payment.</p>
+          <p id="receive-status" class="message" role="status" hidden></p>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="close-receive">Close</button>
+          <button type="submit" class="create-invoice primary">Create invoice</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="send-dialog" aria-labelledby="send-title">
+      <h2 id="send-title">Send</h2>
+      <p id="send-account" class="dialog-account muted small"></p>
+      <form id="pay-form">
+        <label>
+          Invoice to pay
+          <textarea
+            class="pay-invoice"
+            rows="3"
+            required
+            autofocus
+            placeholder="Paste the recipient invoice…"
+          ></textarea>
+        </label>
+        <p class="muted small">Maximum fee: 1 CKB</p>
+        <p id="pay-hint" class="muted small" hidden>Select a ready channel before paying.</p>
+        <p id="pay-error" class="message error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-pay">Cancel</button>
+          <button type="submit" class="pay primary">Pay invoice</button>
+        </div>
+      </form>
+    </dialog>
     <template id="panel-template">
-      <h2 class="slot-title"></h2>
+      <div class="panel-heading">
+        <h2 class="slot-title"></h2>
+        <button
+          class="logout"
+          title="Remove this account from the panel. Its SDK clients keep running in the background."
+          hidden
+        >
+          Clear selection
+        </button>
+      </div>
       <label class="login-label"
-        >Select account<select class="login" disabled>
+        >Account<select class="login" disabled>
           <option value="">Select a user</option>
         </select></label
       >
+      <p class="account-empty muted">
+        Select a user above, or add a user to get started. Use a different account on each side to
+        try payments.
+      </p>
       <div class="workspace" hidden>
-        <div class="identity">
-          <div>
-            <h3 class="display-name"></h3>
-            <span class="user-name muted"></span>
-          </div>
-          <button class="logout">Log out</button>
-        </div>
-        <div class="wallet-strip">
-          <span class="wallet-name"></span><code class="wallet-address"></code>
-        </div>
         <div class="balances">
           <div>
             <span>On-chain wallet <small>CKB</small></span
@@ -94,89 +169,59 @@
         </div>
         <div class="setup">
           <div class="setup-row">
-            <div>
-              <strong>Tenant identity</strong><span class="tenant-state muted">Not registered</span>
+            <label>
+              <span>Tenant<span class="tenant-state status">Not registered</span></span>
+              <select class="tenant-select" aria-label="Tenant"></select>
+            </label>
+            <div class="setup-actions">
+              <button class="register">Register tenant</button>
+              <button class="new-tenant" hidden>Add tenant</button>
             </div>
-            <button class="register">Register tenant</button>
           </div>
-          <label
-            >Current tenant<select class="tenant-select" aria-label="Current tenant"></select
-          ></label>
-          <button class="new-tenant">Add tenant</button>
-          <code class="tenant-id detail-id"></code>
           <div class="setup-row">
-            <div>
-              <strong>Payment channel</strong><span class="channel-state muted">Not open</span>
-            </div>
-            <button class="open-channel" disabled>Open channel</button>
-          </div>
-          <label
-            >Current channel<select class="channel-select" aria-label="Current channel"></select
-          ></label>
-          <code class="channel-id detail-id"></code>
-        </div>
-        <p class="panel-message message" role="status" hidden></p>
-        <div class="payment-section">
-          <h3>Receive</h3>
-          <form class="receive-form">
-            <label
-              >Amount to receive (CKB)
-              <div class="input-action">
-                <input
-                  class="receive-amount"
-                  inputmode="decimal"
-                  value="1"
-                  required
-                  aria-label="Amount to receive (CKB)"
-                /><button class="create-invoice" type="submit" disabled>Create invoice</button>
-              </div></label
-            >
-          </form>
-          <div class="invoice-output" hidden>
-            <label
-              >Invoice to receive payment<textarea
-                class="generated-invoice"
-                readonly
-                rows="3"
-              ></textarea>
+            <label>
+              <span>Channel<span class="channel-state status">Not open</span></span>
+              <select class="channel-select" aria-label="Channel"></select>
             </label>
-            <div class="invoice-actions">
-              <button class="copy-invoice">Copy invoice</button
-              ><button class="send-invoice">Fill other side</button>
+            <div class="setup-actions">
+              <button class="open-channel" disabled>Open channel</button>
+              <button class="close-channel" disabled>Close channel</button>
             </div>
           </div>
+          <p class="setup-hint muted small"></p>
         </div>
-        <div class="payment-section">
-          <h3>Send</h3>
-          <form class="pay-form">
-            <label
-              >Invoice to pay<textarea
-                class="pay-invoice"
-                rows="3"
-                required
-                placeholder="Paste the recipient invoice…"
-              ></textarea>
-            </label>
-            <div class="pay-actions">
-              <span class="muted small">Maximum fee: 1 CKB</span
-              ><button class="pay" type="submit" disabled>Pay invoice</button>
-            </div>
-          </form>
-        </div>
-        <div class="history-section">
-          <h3>Payment history <span class="history-count muted small">0</span></h3>
-          <p class="history-empty muted small">No payments yet</p>
-          <ol class="history"></ol>
+        <div class="payments">
+          <div class="payment-actions">
+            <button class="receive primary" type="button" aria-haspopup="dialog" disabled>
+              Receive
+            </button>
+            <button class="send primary" type="button" aria-haspopup="dialog" disabled>Send</button>
+          </div>
+          <div class="history-section">
+            <h3>Payment activity <span class="history-count muted small">0</span></h3>
+            <p class="history-empty muted small">No payments yet</p>
+            <ol class="history"></ol>
+          </div>
         </div>
         <details class="account-tools">
-          <summary>Account tools</summary>
+          <summary>Account details &amp; tools</summary>
+          <dl class="account-details">
+            <dt>Account</dt>
+            <dd><span class="display-name"></span> <span class="user-name muted"></span></dd>
+            <dt class="wallet-name">Wallet</dt>
+            <dd><code class="wallet-address"></code></dd>
+            <dt>Tenant ID</dt>
+            <dd><code class="tenant-id"></code></dd>
+            <dt>Channel ID</dt>
+            <dd><code class="channel-id"></code></dd>
+          </dl>
           <p class="muted small">
             Closing the channel returns funds to the linked wallet. Registered users keep their
-            identities and cannot be deleted.
+            identities and cannot be deleted. Clearing a panel's selection keeps its SDK clients
+            running in the background.
           </p>
           <div>
-            <button class="close-channel" disabled>Close channel</button
-            ><button class="delete-user danger">Delete unregistered user</button>
+            <button class="delete-user danger">Delete unregistered user</button>
           </div>
         </details>
       </div>

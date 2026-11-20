@@ -13,7 +13,7 @@ import {
   fromHex,
 } from '../dist/index.js';
 import { make, register, result, config, chain, fetchRpc, key } from './helpers.ts';
-test('lazy manager, registration proof, result validation and client caching', async () => {
+test('registration proof, result validation and client caching', async () => {
   let fetches = 0;
   const { lsp, storage } = make({
     fetch: async () => {
@@ -28,7 +28,9 @@ test('lazy manager, registration proof, result validation and client caching', a
   assert.match(p.params.signature, /^[0-9a-f]{128}$/);
   assert.match(p.params.request_id, /^0x[0-9a-f]{64}$/);
   assert.equal(typeof p.params.signed_at, 'string');
-  assert.equal((await lsp.listTenants())[0].ready, false);
+  const [pending] = await lsp.listTenants();
+  assert.equal(pending.ready, false);
+  assert.equal(pending.credentialStatus, 'unregistered');
   assert.equal((await storage.list<Record<string, unknown>>(''))[0].value.root, undefined);
   await assert.rejects(
     lsp.finishRegistration(p.tenantId, result('f'.repeat(64), p.params.root_signer_pubkey)),
@@ -44,17 +46,26 @@ test('lazy manager, registration proof, result validation and client caching', a
     result(p.tenantId, p.params.root_signer_pubkey),
   );
   assert.equal(info.ready, true);
+  assert.equal(info.credentialStatus, 'available');
   const a = lsp.createClient(info.tenantId);
   assert.equal(a, lsp.createClient(info.tenantId));
-  assert.equal(fetches, 0);
   const clean = lsp.cleanup(info.tenantId);
   assert.throws(
     () => lsp.createClient(info.tenantId),
     (e) => e instanceof FiberLspError && e.code === 'CLEANING_UP',
   );
   await clean;
-  assert.notEqual(lsp.createClient(info.tenantId), a);
+  const b = lsp.createClient(info.tenantId);
+  assert.notEqual(b, a);
   await assert.rejects(a.listChannels(), (e) => e instanceof FiberLspError && e.code === 'CLOSED');
+  const directCleanup = b.cleanup();
+  assert.equal(lsp.cleanup(info.tenantId), directCleanup);
+  assert.throws(
+    () => lsp.createClient(info.tenantId),
+    (e) => e instanceof FiberLspError && e.code === 'CLEANING_UP',
+  );
+  await directCleanup;
+  assert.notEqual(lsp.createClient(info.tenantId), b);
   await lsp.cleanup(info.tenantId);
   await lsp.cleanup(info.tenantId);
   assert.equal((await lsp.listTenants()).length, 1);

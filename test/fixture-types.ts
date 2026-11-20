@@ -22,11 +22,6 @@ export interface ChannelFixture {
   invoice: string;
   invoiceObject: unknown;
 }
-export interface MockPayment {
-  payment_hash: Hex;
-  status: string;
-  fee: Hex;
-}
 export type RpcParams = Record<string, unknown>;
 export interface RpcRequest {
   id: number;

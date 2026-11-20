@@ -7,10 +7,19 @@ export function parseCkb(value: string): bigint {
   if (result <= 0n || result > 0xffffffffffffffffn) throw Error('Amount is out of range');
   return result;
 }
-export function formatCkb(value: string | bigint | number | null | undefined): string {
+export function formatCkb(
+  value: string | bigint | number | null | undefined,
+  fractionDigits?: number,
+): string {
   if (value === null || value === undefined) return '—';
-  const n = BigInt(value);
+  let n = BigInt(value);
+  if (fractionDigits !== undefined) {
+    const scale = 10n ** BigInt(8 - fractionDigits);
+    n = ((n + scale / 2n) / scale) * scale;
+  }
   const whole = (n / 100_000_000n).toLocaleString('en-US');
-  const fraction = (n % 100_000_000n).toString().padStart(8, '0').replace(/0+$/, '');
+  const digits = (n % 100_000_000n).toString().padStart(8, '0');
+  const fraction =
+    fractionDigits === undefined ? digits.replace(/0+$/, '') : digits.slice(0, fractionDigits);
   return whole + (fraction ? `.${fraction}` : '');
 }

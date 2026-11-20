@@ -1,15 +1,45 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fingerprint } from './wasm-fingerprint.ts';
-import { spawnSync } from 'node:child_process';
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const wasmDir = dirname(fileURLToPath(import.meta.url));
+const root = resolve(wasmDir, '..');
+const pkg = resolve(wasmDir, 'pkg');
+const crateSource = resolve(wasmDir, 'src/lib.rs');
+const crateManifest = resolve(wasmDir, 'Cargo.toml');
+const crateLock = resolve(wasmDir, 'Cargo.lock');
+const stamp = resolve(pkg, 'source.sha256');
+
+async function fingerprint() {
+  const hash = createHash('sha256');
+  for (const path of [crateSource, crateManifest, crateLock]) hash.update(await readFile(path));
+  return hash.digest('hex');
+}
+
+if (process.argv.includes('--if-needed')) {
+  try {
+    await Promise.all(
+      [
+        'fiber_lsp_sdk_wasm.js',
+        'fiber_lsp_sdk_wasm.d.ts',
+        'fiber_lsp_sdk_wasm_bg.wasm',
+        'fiber_lsp_sdk_wasm_bg.wasm.d.ts',
+      ].map((file) => access(resolve(pkg, file))),
+    );
+    if ((await readFile(stamp, 'utf8')) === (await fingerprint())) process.exit(0);
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+}
+
 const run = (cmd: string, args: string[]) => {
   const p = spawnSync(cmd, args, { cwd: root, stdio: 'inherit', env: process.env });
   if (p.error) throw p.error;
   if (p.status !== 0) process.exit(p.status ?? 1);
 };
-let manifest = resolve(root, 'wasm/Cargo.toml');
+let manifest = crateManifest;
 let source = process.env.FIBER_SOURCE;
 if (source) {
   source = resolve(source);
@@ -18,7 +48,7 @@ if (source) {
   let content = await readFile(manifest, 'utf8');
   content = content.replace(
     'crate-type = ["cdylib"]',
-    `crate-type = ["cdylib"]\npath = ${JSON.stringify(resolve(root, 'wasm/src/lib.rs'))}`,
+    `crate-type = ["cdylib"]\npath = ${JSON.stringify(crateSource)}`,
   );
   for (const name of ['fiber-lsp-sdk', 'fiber-types', 'fiber-json-types']) {
     content = content.replace(
@@ -29,7 +59,7 @@ if (source) {
   manifest = resolve(work, 'Cargo.toml');
   await writeFile(manifest, content);
   try {
-    let lock = await readFile(resolve(root, 'wasm/Cargo.lock'), 'utf8');
+    let lock = await readFile(crateLock, 'utf8');
     lock = lock.replace(
       /(name = "fiber-(?:lsp-sdk|types|json-types)"\nversion = "[^"]+"\n)source = "[^"]+"\n/g,
       '$1',
@@ -50,13 +80,13 @@ run('cargo', [
   '--target-dir',
   resolve(root, 'target/wasm'),
 ]);
-await mkdir(resolve(root, 'wasm/pkg'), { recursive: true });
+await mkdir(pkg, { recursive: true });
 run('wasm-bindgen', [
   resolve(root, 'target/wasm/wasm32-unknown-unknown/release/fiber_lsp_sdk_wasm.wasm'),
   '--target',
   'web',
   '--out-dir',
-  resolve(root, 'wasm/pkg'),
+  pkg,
   '--out-name',
   'fiber_lsp_sdk_wasm',
 ]);
@@ -66,5 +96,5 @@ if (source)
     /(name = "fiber-(?:lsp-sdk|types|json-types)"\nversion = "[^"]+"\n)/g,
     '$1source = "git+https://github.com/chenyukang/fiber?rev=76307312e8de518c9a32074e6d16867c04de4f86#76307312e8de518c9a32074e6d16867c04de4f86"\n',
   );
-await writeFile(resolve(root, 'wasm/Cargo.lock'), lock);
-await writeFile(resolve(root, 'wasm/pkg/source.sha256'), await fingerprint());
+await writeFile(crateLock, lock);
+await writeFile(stamp, await fingerprint());

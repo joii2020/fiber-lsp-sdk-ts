@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { rpc } from './rpc.ts';
 import { registerTenant } from './registration.ts';
 import { UserStore, badRequest } from './users.ts';
+import { attachDevnetWebSocket } from './websocket.ts';
 import {
   sameScript,
   fundingTerms,
@@ -128,7 +129,15 @@ export function createDevnetHandler(
         if (!account || account.reserved || !sameScript(account.lockScript, user.lockScript))
           throw badRequest('Wallet binding does not match the current offckb environment', 409);
         if (input.action === 'balance') reply(200, await walletBalance(config, user));
-        else if (input.action === 'terms') reply(200, fundingTerms(config, user));
+        else if (input.action === 'terms')
+          reply(
+            200,
+            fundingTerms(
+              config,
+              user,
+              input.fundingAmount === undefined ? undefined : stringField(input, 'fundingAmount'),
+            ),
+          );
         else if (input.action === 'verify')
           reply(
             200,
@@ -198,20 +207,17 @@ export function createDevnetHandler(
   };
 }
 
-export async function serve({ staticOnly = false } = {}) {
-  const port = staticOnly ? 4173 : 8008;
-  let handler: ReturnType<typeof createDevnetHandler> | undefined;
-  if (!staticOnly) {
-    let config;
-    try {
-      config = await readDevnetConfig();
-    } catch (error) {
-      if (hasErrorCode(error, 'ENOENT'))
-        throw Error('Prepare offckb first: sh examples/devnet/init.sh');
-      throw error;
-    }
-    handler = createDevnetHandler(config);
+export async function serve() {
+  const port = 8008;
+  let config: DevnetConfig;
+  try {
+    config = await readDevnetConfig();
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT'))
+      throw Error('Prepare offckb first: sh examples/devnet/init.sh');
+    throw error;
   }
+  const handler = createDevnetHandler(config);
   const mime: Record<string, string> = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
@@ -222,7 +228,7 @@ export async function serve({ staticOnly = false } = {}) {
   };
   const server = createServer(async (req, res) => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-    if (handler && (await handler(req, res, pathname))) return;
+    if (await handler(req, res, pathname)) return;
     const relative =
       pathname === '/'
         ? 'examples/browser.html'
@@ -234,8 +240,7 @@ export async function serve({ staticOnly = false } = {}) {
       !pathname.startsWith('/example/browser/') &&
       !pathname.startsWith('/example/shared/') &&
       pathname !== '/examples/styles.css' &&
-      !pathname.startsWith('/dist/') &&
-      !pathname.startsWith('/test/fixtures/')
+      !pathname.startsWith('/dist/')
     ) {
       res.writeHead(404);
       res.end();
@@ -259,6 +264,7 @@ export async function serve({ staticOnly = false } = {}) {
       res.end('Run pnpm build before starting this example.');
     }
   });
+  attachDevnetWebSocket(server, config.fiberLsp.wsUrl);
   server.on('error', (error) => {
     console.error(error);
     process.exitCode = 1;
@@ -268,5 +274,5 @@ export async function serve({ staticOnly = false } = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await serve({ staticOnly: process.argv.includes('--static') });
+  await serve();
 }

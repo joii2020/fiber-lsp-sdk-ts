@@ -113,6 +113,7 @@ function fundingFixture() {
     ...devnetConfig(),
     wallet: {
       fundingAmount: String(1000n * CKB),
+      minFundingAmount: String(100n * CKB),
       remoteFundingAmount: String(1000n * CKB),
       remoteLock: remote,
       defaultLockDep: dep,
@@ -173,7 +174,22 @@ test('offckb wallet rejects wrong change, excess fees, missing remote funding an
   await assert.rejects(verifyWalletFunding(config, user, remoteUnderpaid, terms, call), /funding/);
   await assert.rejects(
     verifyWalletFunding(config, user, tx, { ...terms, fundingAmount: '1' }, call),
+    /LSP minimum/,
+  );
+  await assert.rejects(
+    verifyWalletFunding(config, user, tx, { ...terms, maxWalletDebit: '1' }, call),
     /terms do not match/,
+  );
+  const customAmount = 750n * CKB + 1n;
+  const customTerms = fundingTerms(config, user, String(customAmount));
+  assert.equal(customTerms.maxWalletDebit, String(customAmount + CKB));
+  await assert.rejects(verifyWalletFunding(config, user, tx, customTerms, call), /total funding/);
+  const customTx = structuredClone(tx);
+  customTx.outputs[0].capacity = `0x${(customAmount + 1000n * CKB).toString(16)}`;
+  customTx.outputs[1].capacity = `0x${(1999n * CKB - customAmount).toString(16)}`;
+  assert.deepEqual(
+    await verifyWalletFunding(config, user, customTx, customTerms, call),
+    customTx.inputs.map((i) => i.previous_output),
   );
   const duplicate = structuredClone(tx);
   duplicate.inputs[1] = duplicate.inputs[0];

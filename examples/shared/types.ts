@@ -48,6 +48,7 @@ export interface DevnetConfig {
   accounts: OffckbAccount[];
   wallet: {
     fundingAmount: string;
+    minFundingAmount: string;
     remoteFundingAmount: string;
     remoteLock: Script;
     defaultLockDep: CellDep;

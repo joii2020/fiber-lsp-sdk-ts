@@ -89,6 +89,21 @@ export async function debugRegisterTenant(options: {
     options.token,
   );
 }
+export function isInvoiceCreationRejected(error: unknown): error is RpcError {
+  if (!(error instanceof RpcError)) return false;
+  if (error.rpcCode === -32602) return true;
+  if (error.rpcCode !== -32000) return false;
+
+  // Fiber also uses -32000 for errors after persisting the invoice. Match only
+  // parameter and feature checks that run before the invoice can be written.
+  return [
+    /^Currency must be (?:Fibb|Fibt|Fibd) with the chain network$/,
+    /^Description with length of \d+ is too long, max length is 639$/,
+    /^final_expiry_delta must be (?:greater|less) than or equal to \d+$/,
+    /^Node does not support trampoline routing, please enable trampoline routing feature$/,
+    /^hosted tenant invoices do not support MPP$/,
+  ].some((message) => message.test(error.message));
+}
 export function isMissing(error: unknown, direction: 'incoming' | 'outgoing'): boolean {
   if (!(error instanceof RpcError) || ![-32000, -32001, -32602].includes(error.rpcCode))
     return false;

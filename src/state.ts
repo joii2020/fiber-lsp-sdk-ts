@@ -1,4 +1,4 @@
-import type { SignerState } from './wasm.js';
+import type { SignerState } from './wasm/index.js';
 import type {
   TenantInfo,
   TenantStatus,
@@ -48,13 +48,13 @@ export interface PaymentRecord {
   resolution?: 'fulfill' | 'cancel';
   sent: boolean;
   raw?: Record<string, unknown>;
-  /** Once true, an interrupted keysend must never be submitted again. */
-  outcomeUnknown?: boolean;
+  /** The bound Keysend hash and signer authorization were committed together. */
+  keysendAuthorized?: true;
 }
 export interface TenantRecord {
   schema: 1;
   revision: number;
-  info: TenantInfo;
+  info: Omit<TenantInfo, 'credentialStatus'>;
   signer: SignerState;
   tenant?: TenantStatus;
   token?: string;

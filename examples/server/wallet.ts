@@ -81,8 +81,14 @@ export async function readOffckbAccounts(
 export function fundingTerms(
   config: DevnetConfig,
   user: Pick<User, 'lockScript'>,
+  fundingAmount = config.wallet.fundingAmount,
 ): FundingTermsJson {
-  const amount = BigInt(config.wallet.fundingAmount);
+  if (!/^[1-9]\d{0,19}$/.test(fundingAmount)) throw badRequest('Invalid wallet funding amount');
+  const amount = BigInt(fundingAmount);
+  if (amount < BigInt(config.wallet.minFundingAmount))
+    throw badRequest('Wallet funding amount is below the LSP minimum');
+  if (amount + BigInt(config.wallet.remoteFundingAmount) > 0xffffffffffffffffn)
+    throw badRequest('Wallet funding amount is out of range');
   return {
     fundingAmount: amount.toString(),
     remoteFundingAmount: config.wallet.remoteFundingAmount,
@@ -120,7 +126,8 @@ export async function verifyWalletFunding(
   terms: FundingTermsJson,
   call: (url: string, method: string, params: unknown[]) => Promise<LiveCellResponse> = rpc,
 ): Promise<OutPoint[]> {
-  const expected = fundingTerms(config, user);
+  if (typeof terms?.fundingAmount !== 'string') throw badRequest('Missing wallet funding amount');
+  const expected = fundingTerms(config, user, terms.fundingAmount);
   for (const key of Object.keys(expected) as (keyof FundingTermsJson)[]) {
     const value = expected[key];
     const actual = terms[key];

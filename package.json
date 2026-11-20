@@ -27,24 +27,17 @@
   ],
   "scripts": {
     "build": "node scripts/build.ts",
+    "build:wasm": "node wasm/build.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p examples/tsconfig.json && tsc -p tsconfig.tooling.json",
-    "example:node": "pnpm run build && node examples/node.ts",
-    "example:browser": "pnpm run build && pnpm run build:example && node examples/server/index.ts",
+    "example": "pnpm run build && tsc -p examples/tsconfig.browser.json && node examples/server/index.ts",
     "prepack": "pnpm run build",
-    "build:wasm": "node scripts/build-wasm.ts",
     "test": "pnpm run build && node --test test/*.test.ts",
-    "test:browser": "pnpm run build && pnpm run build:example && playwright test",
-    "test:integration": "pnpm run build && node --test test/integration/*.test.ts",
-    "format": "prettier --write src scripts examples test playwright.config.ts tsconfig*.json",
-    "format:check": "prettier --check src scripts examples test playwright.config.ts tsconfig*.json",
-    "test:fixtures": "node scripts/build-fixtures.ts",
-    "example": "pnpm run example:browser",
-    "build:example": "node scripts/build-example.ts"
+    "format": "prettier --write src scripts wasm examples test tsconfig*.json",
+    "format:check": "prettier --check src scripts wasm examples test tsconfig*.json"
   },
   "devDependencies": {
     "@ckb-ccc/core": "1.14.0",
     "@iarna/toml": "2.2.5",
-    "@playwright/test": "^1.65.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",

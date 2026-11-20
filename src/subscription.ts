@@ -1,5 +1,11 @@
-import { FiberLspError, check } from './errors.js';
+import { FiberLspError, RpcError, check } from './errors.js';
 import type { WebSocketFactory, WebSocketLike } from './types.js';
+import { hash, json } from './utils.js';
+import type { Hex } from './utils.js';
+export interface ChannelSigningUpdate {
+  channel_id: Hex;
+  status: Record<string, unknown>;
+}
 export async function defaultWebSocket(
   url: string,
   token: string,
@@ -18,21 +24,27 @@ export class SigningSubscription {
   private socket: WebSocketLike | undefined;
   private closed = false;
   private subscriptions = new Set<string | number>();
+  private id = 0;
+  private token = '';
   private pending = new Map<
     number,
-    { resolve: () => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> }
+    { resolve: (value: any) => void; reject: (e: unknown) => void; subscribe: boolean }
   >();
   private rejectOpen: ((e: unknown) => void) | undefined;
   constructor(
-    private readonly wake: () => void,
+    private readonly wake: (update: ChannelSigningUpdate) => void,
     private readonly disconnected: (error: Error) => void,
   ) {}
+  get connected(): boolean {
+    return !this.closed && this.socket?.readyState === 1 && this.subscriptions.size > 0;
+  }
   async connect(
     url: string,
     token: string,
     factory?: WebSocketFactory,
     timeout = 30_000,
   ): Promise<void> {
+    this.token = token;
     const socket = await defaultWebSocket(url, token, factory);
     if (this.closed) {
       socket.close();
@@ -62,22 +74,63 @@ export class SigningSubscription {
       });
       if (socket.readyState === 1) opened();
     });
-    await new Promise<void>((resolve, reject) => {
-      const id = 1;
-      const timer = setTimeout(() => {
+    try {
+      await this.request('subscribe', ['channel_signing', {}], timeout, undefined, true);
+    } catch (error) {
+      this.close();
+      throw error;
+    }
+  }
+  call<T>(method: string, params: unknown, timeout = 30_000, signal?: AbortSignal): Promise<T> {
+    check(this.connected, 'NETWORK', 'WebSocket is not connected');
+    return this.request(method, [params], timeout, signal);
+  }
+  private request<T>(
+    method: string,
+    params: unknown[],
+    timeout: number,
+    signal?: AbortSignal,
+    subscribe = false,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (this.closed || signal?.aborted) {
+        reject(new FiberLspError('CLOSED', 'WebSocket request interrupted'));
+        return;
+      }
+      const id = ++this.id;
+      const finish = (error?: unknown, value?: T) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
         this.pending.delete(id);
-        reject(new FiberLspError('NETWORK', 'Signing subscription timed out'));
-        this.close();
+        if (error) reject(error);
+        else resolve(value!);
+      };
+      const abort = () => finish(new FiberLspError('CLOSED', 'WebSocket request interrupted'));
+      const timer = setTimeout(() => {
+        const error = new FiberLspError(
+          'NETWORK',
+          'WebSocket RPC timed out; its outcome may be unknown',
+        );
+        finish(error);
+        this.fail(error);
       }, timeout);
-      this.pending.set(id, { resolve, reject, timer });
-      socket.send(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id,
-          method: 'subscribe',
-          params: ['channel_signing', {}],
-        }),
-      );
+      signal?.addEventListener('abort', abort, { once: true });
+      this.pending.set(id, {
+        resolve: (value) => finish(undefined, value),
+        reject: (error) => finish(error),
+        subscribe,
+      });
+      try {
+        this.socket!.send(json({ jsonrpc: '2.0', id, method, params }));
+      } catch (cause) {
+        const error = new FiberLspError(
+          'NETWORK',
+          'WebSocket RPC failed; its outcome may be unknown',
+          { cause },
+        );
+        finish(error);
+        this.fail(error);
+      }
     });
   }
   private message = (event: { data: unknown }): void => {
@@ -88,24 +141,31 @@ export class SigningSubscription {
       if (typeof message.id === 'number') {
         const pending = this.pending.get(message.id);
         if (!pending) return;
-        clearTimeout(pending.timer);
-        this.pending.delete(message.id);
+        check(
+          'result' in message !== 'error' in message,
+          'NETWORK',
+          'Malformed WebSocket RPC response',
+        );
         if (message.error) {
           pending.reject(
-            new FiberLspError(
-              message.error.code === -32999 ? 'AUTH' : 'RPC',
-              'Signing subscription was rejected',
-            ),
+            message.error.code === -32999
+              ? new FiberLspError('AUTH', 'Tenant credential was rejected')
+              : new RpcError(
+                  message.error.code,
+                  String(message.error.message).replaceAll(this.token, '[REDACTED]'),
+                  message.error.data,
+                ),
           );
-          this.close();
         } else {
-          check(
-            typeof message.result === 'string' || typeof message.result === 'number',
-            'NETWORK',
-            'Invalid subscription ID',
-          );
-          this.subscriptions.add(message.result);
-          pending.resolve();
+          if (pending.subscribe) {
+            check(
+              typeof message.result === 'string' || typeof message.result === 'number',
+              'NETWORK',
+              'Invalid subscription ID',
+            );
+            this.subscriptions.add(message.result);
+          }
+          pending.resolve(message.result);
         }
         return;
       }
@@ -116,32 +176,34 @@ export class SigningSubscription {
         'NETWORK',
         'Unexpected signing subscription event',
       );
-      // Notifications are hints only. Always fetch current state through the same
-      // validated status path; never trust notification payloads as signed state.
       if (type === 'removed') {
         this.fail(new FiberLspError('NETWORK', 'Signing subscription ended'));
         return;
       }
-      this.wake();
+      const data = message.params.result.data;
+      hash(data?.channel_id);
+      check(
+        data.status && ['SignatureRequired', 'NoSignatureRequired'].includes(data.status.type),
+        'NETWORK',
+        'Invalid channel signing status',
+      );
+      // The signer independently verifies the pushed request before producing a signature.
+      this.wake(data);
     } catch (cause) {
       this.fail(new FiberLspError('NETWORK', 'Invalid signing notification', { cause }));
     }
   };
   private fail(error: Error): void {
     if (this.closed) return;
-    this.close();
+    this.close(error);
     this.disconnected(error);
   }
-  close(): void {
+  close(error: Error = new FiberLspError('CLOSED', 'Signing subscription closed')): void {
     if (this.closed) return;
     this.closed = true;
-    const error = new FiberLspError('CLOSED', 'Signing subscription closed');
     this.rejectOpen?.(error);
     this.rejectOpen = undefined;
-    for (const p of this.pending.values()) {
-      clearTimeout(p.timer);
-      p.reject(error);
-    }
+    for (const p of this.pending.values()) p.reject(error);
     this.pending.clear();
     this.subscriptions.clear();
     if (this.socket) {

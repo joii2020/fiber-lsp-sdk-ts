@@ -28,8 +28,12 @@ export function hexToBytes(value: string): Uint8Array {
 export function randomBytes(size = 32): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(size));
 }
-export function hash(value: string): void {
-  check(/^0x[0-9a-f]{64}$/.test(value), 'INVALID_ARGUMENT', 'Expected a 32-byte 0x-prefixed hash');
+export function hash(value: string): asserts value is Hex {
+  check(
+    typeof value === 'string' && /^0x[0-9a-f]{64}$/.test(value),
+    'INVALID_ARGUMENT',
+    'Expected a 32-byte 0x-prefixed hash',
+  );
 }
 export function tenantId(value: string): void {
   check(/^[0-9a-f]{64}$/.test(value), 'INVALID_ARGUMENT', 'Invalid tenantId');

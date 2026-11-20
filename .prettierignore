@@ -1,4 +1,4 @@
-src/wasm/
+src/wasm/fiber_lsp_sdk_wasm.d.ts
 .devnet/
 dist/
 wasm/pkg/

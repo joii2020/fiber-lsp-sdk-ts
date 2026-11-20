@@ -8,11 +8,11 @@ import init, {
   close_template,
   verify_invoice_response,
   validate_public_key,
-} from './wasm/fiber_lsp_sdk_wasm.js';
-import { FiberLspError } from './errors.js';
-import { json, fromHex } from './utils.js';
-import type { ParsedInvoice, Transaction, HashAlgorithm, Script } from './types.js';
-const url = new URL('./wasm/fiber_lsp_sdk_wasm_bg.wasm', import.meta.url);
+} from './fiber_lsp_sdk_wasm.js';
+import { FiberLspError } from '../errors.js';
+import { json, fromHex } from '../utils.js';
+import type { ParsedInvoice, Transaction, HashAlgorithm, Script } from '../types.js';
+const url = new URL('./fiber_lsp_sdk_wasm_bg.wasm', import.meta.url);
 if (url.protocol === 'file:') {
   const { readFile } = await import('node:fs/promises');
   await init({ module_or_path: await readFile(url) });

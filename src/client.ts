@@ -1,6 +1,7 @@
-import { FiberLspError, check, asError } from './errors.js';
-import { RpcTransport, isMissing } from './rpc.js';
+import { FiberLspError, RpcError, check, asError } from './errors.js';
+import { RpcTransport, isInvoiceCreationRejected, isMissing } from './rpc.js';
 import { SigningSubscription } from './subscription.js';
+import type { ChannelSigningUpdate } from './subscription.js';
 import { validateRecord } from './manager.js';
 import { recordKey } from './state.js';
 import {
@@ -10,7 +11,7 @@ import {
   transactionHash,
   verifyInvoiceResponse,
   validatePublicKey,
-} from './wasm.js';
+} from './wasm/index.js';
 import {
   verifyFunding,
   verifyInvoice,
@@ -55,12 +56,16 @@ import type {
   ChainProvider,
 } from './types.js';
 const TAG = '0xffdc';
-interface SignOutcome {
-  type: 'idle' | 'confirmation' | 'submit';
-  review?: Record<string, unknown>;
-  params?: Record<string, unknown>;
+const MAX_INVOICE_DESCRIPTION_BYTES = 639;
+interface InvoiceCreationResult extends Record<string, unknown> {
+  invoice_address: string;
+  invoice: { data?: { payment_hash?: Hex } };
 }
-/** A lazily started, tenant-scoped runtime. Obtain instances with createClient. */
+type SignOutcome =
+  | { type: 'idle' }
+  | { type: 'confirmation'; review: Record<string, unknown> }
+  | { type: 'submit'; params?: Record<string, unknown> };
+/** A tenant-scoped runtime that starts recovery in the background when created. */
 export class FiberLspClient {
   private listeners = new Map<FiberLspEvent, Set<(value: any) => void>>();
   private queue = new Mutex();
@@ -70,11 +75,16 @@ export class FiberLspClient {
   private paused = false;
   private controller = new AbortController();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private timerAt = 0;
+  private roundRunning = false;
+  private wakePending = false;
+  private progressing = false;
+  private nextSigningPollAt = 0;
+  private signingUpdates = new Map<Hex, ChannelSigningUpdate>();
   private socket: SigningSubscription | undefined;
   private socketToken: string | undefined;
   private cleanupPromise: Promise<void> | undefined;
   private unlisten: () => void;
-  private started = false;
   private chain: ChainProvider;
   private reconnectAt = 0;
   private reconnectDelay = 500;
@@ -82,6 +92,7 @@ export class FiberLspClient {
   constructor(
     readonly tenantId: string,
     private readonly options: FiberLspOptions,
+    private readonly onCleanup?: (completion: Promise<void>) => void,
   ) {
     this.chain = {
       getCell: (p, n) => this.wait(options.chain.getCell(p, n)),
@@ -96,10 +107,12 @@ export class FiberLspClient {
         this.controller.abort();
         this.socket?.close();
         this.socket = undefined;
+        this.signingUpdates.clear();
         this.clearTimer();
         this.emit(FiberLspEvent.ConnectionChanged, { tenantId, state: 'paused' });
       }
     });
+    void this.ensureRecovery().catch((error) => this.report(error));
   }
   private wait<T>(value: T | Promise<T>): Promise<T> {
     const signal = this.controller.signal;
@@ -165,7 +178,6 @@ export class FiberLspClient {
     }
     const registered = (value: EventMap[E]) => listener(value);
     set.add(registered);
-    void this.ensureRecovery().catch((error) => this.report(error));
     let cancelled = false;
     return () => {
       if (cancelled) return;
@@ -202,13 +214,33 @@ export class FiberLspClient {
       this.timer = undefined;
     }
   }
-  private schedule(delay = this.options.pollIntervalMs ?? 1500): void {
-    if (this.stopped || this.paused || this.timer !== undefined) return;
+  private schedule(
+    delay = this.socket?.connected && !this.progressing
+      ? (this.options.webSocketPollIntervalMs ?? 15_000)
+      : (this.options.pollIntervalMs ?? 1500),
+  ): void {
+    if (this.stopped || this.paused) return;
+    if (this.roundRunning) {
+      if (delay === 0) this.wakePending = true;
+      return;
+    }
+    const at = Date.now() + delay;
+    if (this.timer !== undefined) {
+      if (this.timerAt <= at) return;
+      this.clearTimer();
+    }
+    this.timerAt = at;
     this.timer = setTimeout(() => {
       this.timer = undefined;
+      this.roundRunning = true;
       void this.round()
         .catch((e) => this.report(e))
-        .finally(() => this.schedule());
+        .finally(() => {
+          this.roundRunning = false;
+          const next = this.wakePending ? 0 : undefined;
+          this.wakePending = false;
+          this.schedule(next);
+        });
     }, delay);
   }
   private async load(): Promise<TenantRecord> {
@@ -248,12 +280,20 @@ export class FiberLspClient {
     this.guard();
     check(r.token, 'NOT_READY', 'Missing tenant credential');
     try {
+      // Never resend a failed WebSocket request over HTTP: a write may already have reached the server.
       const result = await this.wait(
-        new RpcTransport(
-          r.info.fiberLsp.rpcUrl,
-          this.options.fetch,
-          this.options.requestTimeoutMs,
-        ).call<T>(method, params, r.token, this.controller.signal),
+        this.socket?.connected && this.socketToken === r.token
+          ? this.socket.call<T>(
+              method,
+              params,
+              this.options.requestTimeoutMs,
+              this.controller.signal,
+            )
+          : new RpcTransport(
+              r.info.fiberLsp.rpcUrl,
+              this.options.fetch,
+              this.options.requestTimeoutMs,
+            ).call<T>(method, params, r.token, this.controller.signal),
       );
       this.guard();
       return result;
@@ -265,23 +305,20 @@ export class FiberLspClient {
         this.restored = false;
         this.socket?.close();
         this.socket = undefined;
+        this.signingUpdates.clear();
         this.clearTimer();
         this.emit(FiberLspEvent.ConnectionChanged, { tenantId: this.tenantId, state: 'paused' });
       }
       throw error;
     }
   }
-  private async confirm(
-    kind: ConfirmationRequest['kind'],
-    details: Record<string, unknown>,
-    channelId?: Hex,
-    operationId?: string,
-  ): Promise<void> {
+  private async confirm(request: ConfirmationRequest): Promise<void> {
     this.guard();
-    const request: ConfirmationRequest = { tenantId: this.tenantId, kind, details: clone(details) };
-    if (channelId) request.channelId = channelId;
-    if (operationId) request.operationId = operationId;
-    check(await this.wait(this.options.onConfirm(request)), 'REJECTED', 'Operation was declined');
+    check(
+      await this.wait(this.options.onConfirm(clone(request))),
+      'REJECTED',
+      'Operation was declined',
+    );
     this.guard();
   }
   private async connect(r: TenantRecord): Promise<void> {
@@ -296,10 +333,21 @@ export class FiberLspClient {
     this.socket?.close();
     this.emit(FiberLspEvent.ConnectionChanged, { tenantId: this.tenantId, state: 'connecting' });
     const socket = new SigningSubscription(
-      () => this.schedule(0),
+      (update) => {
+        if (this.socket !== socket || this.stopped || this.paused) return;
+        check(
+          this.signingUpdates.has(update.channel_id) || this.signingUpdates.size < 1024,
+          'NETWORK',
+          'Too many pending signing updates',
+        );
+        this.signingUpdates.set(update.channel_id, update);
+        this.schedule(0);
+      },
       (error) => {
         if (this.socket === socket) {
           this.socket = undefined;
+          this.signingUpdates.clear();
+          this.nextSigningPollAt = 0;
           this.restored = false;
           this.reconnectAt = this.now() + this.reconnectDelay;
           this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
@@ -323,6 +371,7 @@ export class FiberLspClient {
       );
       this.guard();
       this.reconnectDelay = 500;
+      this.nextSigningPollAt = 0;
     } catch (error) {
       socket.close();
       if (this.socket === socket) this.socket = undefined;
@@ -337,21 +386,27 @@ export class FiberLspClient {
   }
   private ensureRecovery(): Promise<void> {
     this.assertActive();
-    this.started = true;
     if (this.restored && !this.paused) return Promise.resolve();
     if (this.recovery) return this.recovery;
+    const generation = this.keyGeneration;
     this.recovery = this.queue
       .run(() =>
         this.options.storage.withLock(`tenant/${this.tenantId}`, async () => {
           this.assertActive();
           const r = await this.load();
+          this.assertActive();
+          check(this.keyGeneration === generation, 'LOCKED', 'Storage was locked during recovery');
           if (this.controller.signal.aborted) this.controller = new AbortController();
-          // Key access is lazy and may invoke the application's unlock interface.
+          // Recovery may invoke the application's unlock interface.
           const root = await this.wait(this.options.storage.getRootKey(this.tenantId));
           try {
             this.assertActive();
+            check(
+              this.keyGeneration === generation,
+              'LOCKED',
+              'Storage was locked during recovery',
+            );
             this.paused = false;
-            if (this.controller.signal.aborted) this.controller = new AbortController();
             const identity = await signerAction<{ tenantId: string; publicKey: string }>(
               root,
               r.signer,
@@ -366,6 +421,7 @@ export class FiberLspClient {
           } finally {
             root.fill(0);
           }
+          this.guard();
           await this.connect(r);
           this.guard();
           this.emit(FiberLspEvent.ConnectionChanged, {
@@ -448,6 +504,24 @@ export class FiberLspClient {
       );
     }
     return result.channels;
+  }
+  private invoiceChannelConflict(
+    channels: Record<string, unknown>[],
+    channelId: Hex,
+    asset: unknown,
+  ): string | undefined {
+    const expectedAsset = canonical(asset ?? null);
+    const matching = channels.filter((channel) => {
+      if (canonical(channel.funding_udt_type_script ?? null) !== expectedAsset) return false;
+      // The LSP may select a channel that comes online after the invoice is created.
+      const state = stateName(channel.state);
+      return state !== 'Closed' && state !== 'ShuttingDown';
+    });
+    if (!matching.some((channel) => channel.channel_id === channelId))
+      return 'The selected channel is unavailable for invoice delivery';
+    if (matching.length > 1)
+      return 'Cannot create an invoice while multiple channels for the same asset can receive payments';
+    return undefined;
   }
   private async updateChannels(r: TenantRecord, raw: Record<string, any>[]): Promise<void> {
     const next: ChannelInfo[] = [];
@@ -576,7 +650,10 @@ export class FiberLspClient {
       }
     }
   }
-  private async processSignatures(r: TenantRecord): Promise<void> {
+  private async processSignatures(r: TenantRecord, pushedOnly = false): Promise<void> {
+    const poll = !pushedOnly && (!this.socket?.connected || this.now() >= this.nextSigningPollAt);
+    if (poll)
+      this.nextSigningPollAt = this.now() + (this.options.webSocketPollIntervalMs ?? 15_000);
     for (const o of r.openings) {
       const id = o.proposal?.channel_id;
       if (
@@ -586,20 +663,23 @@ export class FiberLspClient {
         !JSON.parse(r.signer.session).bindings[id]
       )
         continue;
+      const pushed = this.signingUpdates.get(id);
+      if (!pushed && !poll) continue;
       this.guard();
       if (o.close)
         await this.action(r, { action: 'close', channelId: id, fee: toHex(o.close.fee) });
-      const result = await this.rpc<{ channel_id: Hex; status: Record<string, unknown> }>(
-        r,
-        'get_channel_signing_status',
-        { channel_id: id },
-      );
+      const result =
+        pushed ??
+        (await this.rpc<ChannelSigningUpdate>(r, 'get_channel_signing_status', { channel_id: id }));
       check(
         result.channel_id === id,
         'VERIFICATION',
         'Signing status belongs to a different channel',
       );
-      if (result.status?.type !== 'SignatureRequired') continue;
+      if (result.status?.type !== 'SignatureRequired') {
+        if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+        continue;
+      }
       const requestId = String(result.status.request_id);
       hash(requestId);
       const previous = r.submissions[requestId];
@@ -609,9 +689,14 @@ export class FiberLspClient {
           'VERIFICATION',
           'Signing request ID reused with different content',
         );
+        if (pushed && previous.done) {
+          if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+          continue;
+        }
         await this.rpc(r, 'submit_channel_signature', previous.params);
         previous.done = true;
         await this.save(r);
+        if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
         continue;
       }
       const command = {
@@ -623,7 +708,12 @@ export class FiberLspClient {
       };
       let outcome = await this.action<SignOutcome>(r, command);
       if (outcome.type === 'confirmation') {
-        await this.confirm('sign', { requestId, review: outcome.review }, id);
+        await this.confirm({
+          tenantId: this.tenantId,
+          kind: 'sign',
+          channelId: id,
+          details: { requestId, review: outcome.review },
+        });
         outcome = await this.action<SignOutcome>(r, {
           ...command,
           now: toHex(this.now()),
@@ -643,6 +733,7 @@ export class FiberLspClient {
         r.submissions[requestId]!.done = true;
         await this.save(r);
       }
+      if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
     }
   }
   private async findUnknownKeysend(r: TenantRecord, p: PaymentRecord): Promise<void> {
@@ -682,25 +773,76 @@ export class FiberLspClient {
       'Keysend hash collides with a previous payment',
     );
     p.info.paymentHash = result.payment_hash;
+    p.info.version++;
     p.raw = clone(result);
-    p.outcomeUnknown = false;
-    const a = p.authorization!;
-    a.payment_hash = result.payment_hash;
-    await this.save(r);
+    await this.authorizeKeysend(r, p, result.payment_hash);
+    this.emit(FiberLspEvent.PaymentChanged, p.info);
+  }
+  private async authorizeKeysend(
+    r: TenantRecord,
+    p: PaymentRecord,
+    paymentHash: Hex,
+  ): Promise<void> {
+    const authorization = p.authorization;
+    check(
+      authorization &&
+        (authorization.payment_hash === null || authorization.payment_hash === paymentHash),
+      'CORRUPT_DATA',
+      'Missing or mismatched keysend authorization terms',
+    );
+    authorization.payment_hash = paymentHash;
+    p.keysendAuthorized = true;
+    // The signer action commits the payment record and signer snapshot together.
     await this.action(r, {
       action: 'authorizePayment',
       channelId: p.info.channelId,
-      authorization: a,
+      authorization,
     });
+  }
+  private async finishUnissuedInvoice(
+    r: TenantRecord,
+    p: PaymentRecord,
+    paymentHash: Hex,
+    status: 'Failed' | 'Expired',
+    failureReason?: string,
+  ): Promise<void> {
+    p.info.status = status;
+    p.info.complete = true;
+    p.info.version++;
+    if (failureReason !== undefined) p.info.failureReason = failureReason;
+    p.resolution = 'cancel';
+    await this.action(r, { action: 'cancel', channelId: p.info.channelId, paymentHash });
+    this.emit(FiberLspEvent.InvoiceChanged, p.info);
+  }
+  private async submitInvoice(
+    r: TenantRecord,
+    p: PaymentRecord,
+  ): Promise<InvoiceCreationResult | RpcError> {
+    const paymentHash = p.info.paymentHash;
+    check(paymentHash, 'CORRUPT_DATA', 'Missing invoice payment hash');
+    p.sent = true;
+    await this.save(r);
+    try {
+      return await this.rpc<InvoiceCreationResult>(r, 'new_invoice', p.request);
+    } catch (error) {
+      if (!isInvoiceCreationRejected(error)) throw error;
+      await this.finishUnissuedInvoice(r, p, paymentHash, 'Failed', error.message);
+      return error;
+    }
   }
   private async refreshPayment(
     r: TenantRecord,
     p: PaymentRecord,
     channels: Record<string, any>[],
   ): Promise<PaymentInfo | null> {
+    // Later channel updates can change the balances used for reconciliation.
+    if (p.info.complete) return p.info;
     if (!p.info.paymentHash) {
       await this.findUnknownKeysend(r, p);
       if (!p.info.paymentHash) return p.info;
+    } else if (p.request.keysend === true && !p.keysendAuthorized) {
+      // Older records could persist the hash before authorizing it in the signer.
+      await this.authorizeKeysend(r, p, p.info.paymentHash);
     }
     const id = p.info.paymentHash;
     const incoming = p.info.direction === 'incoming';
@@ -708,8 +850,26 @@ export class FiberLspClient {
     try {
       result = await this.rpc(r, incoming ? 'get_invoice' : 'get_payment', { payment_hash: id });
     } catch (error) {
-      if (isMissing(error, p.info.direction)) return null;
-      throw error;
+      if (!isMissing(error, p.info.direction)) throw error;
+      if (
+        incoming &&
+        p.sent &&
+        p.info.status === 'Creating' &&
+        !p.info.invoice &&
+        p.authorization &&
+        fromHex(p.authorization.expires_at_ms) <= BigInt(this.now())
+      ) {
+        const records = await this.records(r, p.info.channelId);
+        if (
+          latest(records, false) &&
+          latest(records, true) &&
+          !records.some((record) => record.tlcs.some((tlc) => tlc.paymentHash === id))
+        ) {
+          await this.finishUnissuedInvoice(r, p, id, 'Expired');
+          return p.info;
+        }
+      }
+      return null;
     }
     if (incoming) {
       check(
@@ -905,34 +1065,52 @@ export class FiberLspClient {
           authorization: p.authorization,
           ...(p.preimage ? { preimage: p.preimage } : {}),
         });
-        p.sent = true;
-        await this.save(r);
-        const result = await this.rpc<Record<string, any>>(
-          r,
-          p.info.direction === 'incoming' ? 'new_invoice' : 'send_payment',
-          p.request,
-        );
-        if (p.info.direction === 'outgoing')
+        if (p.info.direction === 'incoming') {
+          const conflict = this.invoiceChannelConflict(
+            channels,
+            p.info.channelId,
+            p.request.udt_type_script,
+          );
+          if (conflict) {
+            const paymentHash = p.info.paymentHash;
+            check(paymentHash, 'CORRUPT_DATA', 'Missing invoice payment hash');
+            await this.finishUnissuedInvoice(r, p, paymentHash, 'Failed', conflict);
+            continue;
+          }
+          const result = await this.submitInvoice(r, p);
+          if (result instanceof RpcError) continue;
+          p.raw = clone(result);
+        } else {
+          p.sent = true;
+          await this.save(r);
+          const result = await this.rpc<Record<string, unknown>>(r, 'send_payment', p.request);
           check(
             result.payment_hash === p.info.paymentHash,
             'VERIFICATION',
             'Resumed payment response changed hash',
           );
-        p.raw = clone(result);
+          p.raw = clone(result);
+        }
         await this.save(r);
       }
   }
   private async sync(r: TenantRecord): Promise<void> {
+    // Opening/closing pushes can be signed before snapshot queries. Payments first
+    // refresh the preimage or cancellation authorization required by the signer.
+    if (!r.payments.some((p) => !p.info.complete)) await this.processSignatures(r, true);
     let channels = await this.queryChannels(r);
     await this.updateChannels(r, channels);
+    const revision = r.revision;
     await this.resume(r, channels);
     for (const p of r.payments.filter((p) => !p.info.complete))
       await this.refreshPayment(r, p, channels);
     await this.processSignatures(r);
-    channels = await this.queryChannels(r);
-    await this.updateChannels(r, channels);
-    for (const p of r.payments.filter((p) => !p.info.complete))
-      await this.refreshPayment(r, p, channels);
+    if (r.revision !== revision) {
+      channels = await this.queryChannels(r);
+      await this.updateChannels(r, channels);
+      for (const p of r.payments.filter((p) => !p.info.complete))
+        await this.refreshPayment(r, p, channels);
+    }
     // A persisted shutdown request may have been interrupted before transport.
     for (const o of r.openings)
       if (
@@ -943,12 +1121,25 @@ export class FiberLspClient {
         )
       )
         await this.requestClose(r, o);
+    this.progressing =
+      r.payments.some((p) => !p.info.complete) ||
+      r.openings.some(
+        (o) => !['ready', 'closed', 'failed'].includes(o.stage) && !o.info.needsWallet,
+      );
   }
   async listChannels(): Promise<ChannelInfo[]> {
     return this.run(async (r) => {
       await this.sync(r);
       return clone(r.channels);
     });
+  }
+  /** Read locally saved payments and invoices, including payments awaiting a hash. */
+  async listPayments(): Promise<PaymentInfo[]> {
+    this.assertActive();
+    const r = await this.options.storage.get<TenantRecord>(recordKey(this.tenantId));
+    this.assertActive();
+    validateRecord(r, this.tenantId);
+    return r.payments.map(({ info }) => clone(info));
   }
   async getPayment({
     paymentHash: payment,
@@ -1049,7 +1240,12 @@ export class FiberLspClient {
           'Invalid funding limits',
         );
         const operationId = bytesToHex(randomBytes());
-        await this.confirm('openChannel', { terms }, undefined, operationId);
+        await this.confirm({
+          tenantId: this.tenantId,
+          kind: 'openChannel',
+          operationId,
+          details: { terms },
+        });
         if (r.openings.length) await this.action(r, { action: 'discardPending' });
         const material = await this.action(r, { action: 'allocateChannel' });
         const request: Record<string, unknown> = {
@@ -1212,17 +1408,19 @@ export class FiberLspClient {
         const template = makeClose(o, balances, r.info.fiberLsp.network);
         const fee = fromHex(template.fee);
         check(fee <= o.terms.maxFundingFee, 'VERIFICATION', 'Close fee exceeds approved limit');
-        await this.confirm(
-          'closeChannel',
-          {
+        await this.confirm({
+          tenantId: this.tenantId,
+          kind: 'closeChannel',
+          channelId,
+          operationId: o.operationId,
+          details: {
             fee,
             localAmount: balances[0],
             remoteAmount: balances[1],
             shutdownScript: o.terms.shutdownScript,
+            udtTypeScript: o.terms.udtTypeScript ?? null,
           },
-          channelId,
-          o.operationId,
-        );
+        });
         o.close = { fee, localAmount: balances[0], remoteAmount: balances[1], requested: false };
         o.stage = 'closing';
         await this.save(r);
@@ -1291,6 +1489,14 @@ export class FiberLspClient {
   ): Promise<PaymentInfo & { paymentHash: Hex; invoice: string }> {
     hash(options.channelId);
     check(options.amount > 0n, 'INVALID_ARGUMENT', 'Invoice amount must be positive');
+    const description = options.description;
+    if (description !== undefined)
+      check(
+        typeof description === 'string' &&
+          new TextEncoder().encode(description).length <= MAX_INVOICE_DESCRIPTION_BYTES,
+        'INVALID_ARGUMENT',
+        `Invoice description must be at most ${MAX_INVOICE_DESCRIPTION_BYTES} UTF-8 bytes`,
+      );
     return this.run(async (r) => {
       const { opening, records, balances } = await this.paymentContext(r, options.channelId);
       const network = r.info.fiberLsp.network;
@@ -1306,6 +1512,12 @@ export class FiberLspClient {
         'INVALID_ARGUMENT',
         'Invoice expiry must be a positive integer',
       );
+      const conflict = this.invoiceChannelConflict(
+        await this.queryChannels(r),
+        options.channelId,
+        opening.terms.udtTypeScript,
+      );
+      if (conflict) throw new FiberLspError('CONFLICT', conflict);
       const preimage = randomBytes();
       const algorithm = options.hashAlgorithm ?? 'ckb_hash';
       const payment = paymentHash(preimage, algorithm);
@@ -1330,7 +1542,7 @@ export class FiberLspClient {
         allow_mpp: false,
         allow_trampoline_routing: true,
       };
-      if (options.description) request.description = options.description;
+      if (description) request.description = description;
       if (opening.terms.udtTypeScript) request.udt_type_script = opening.terms.udtTypeScript;
       const p: PaymentRecord = {
         info: {
@@ -1359,13 +1571,8 @@ export class FiberLspClient {
         authorization,
         preimage: preimageHex,
       });
-      p.sent = true;
-      await this.save(r);
-      const result = await this.rpc<{ invoice_address: string; invoice: Record<string, any> }>(
-        r,
-        'new_invoice',
-        request,
-      );
+      const result = await this.submitInvoice(r, p);
+      if (result instanceof RpcError) throw result;
       verifyInvoiceResponse(result.invoice_address, result.invoice);
       const parsed = parseInvoice(result.invoice_address);
       verifyInvoice(parsed, network, opening.terms.udtTypeScript, this.now());
@@ -1410,26 +1617,27 @@ export class FiberLspClient {
       );
       const rate = options.maxFeeRate ?? 5n;
       check(rate >= 0n, 'INVALID_ARGUMENT', 'Invalid fee rate');
-      const rateFee = (parsed.amount! * rate + 999n) / 1000n;
+      const rateFee = (parsed.amount * rate + 999n) / 1000n;
       const fee =
         parsed.payeePublicKey === r.info.fiberLsp.nodePublicKey
           ? 0n
           : rateFee < options.maxFee
             ? rateFee
             : options.maxFee;
-      const amount = parsed.amount! + fee;
+      const amount = parsed.amount + fee;
       check(
         amount <= opening.info.localBalance,
         'INVALID_ARGUMENT',
         'Insufficient spendable channel balance',
       );
       const operationId = bytesToHex(randomBytes());
-      await this.confirm(
-        'payInvoice',
-        { invoice: parsed, amount: parsed.amount, feeBudget: fee, maxFeeRate: rate },
-        options.channelId,
+      await this.confirm({
+        tenantId: this.tenantId,
+        kind: 'payInvoice',
+        channelId: options.channelId,
         operationId,
-      );
+        details: { invoice: parsed, amount: parsed.amount, feeBudget: fee, maxFeeRate: rate },
+      });
       const authorization = this.authorization(
         network,
         parsed.paymentHash,
@@ -1458,7 +1666,7 @@ export class FiberLspClient {
           direction: 'outgoing',
           status: 'Created',
           complete: false,
-          amount: parsed.amount!,
+          amount: parsed.amount,
           invoice: options.invoice,
           version: 1,
         },
@@ -1516,12 +1724,18 @@ export class FiberLspClient {
         'Insufficient spendable channel balance',
       );
       const operationId = bytesToHex(randomBytes());
-      await this.confirm(
-        'keysend',
-        { targetPublicKey: options.targetPublicKey, amount: options.amount, feeBudget: fee },
-        options.channelId,
+      await this.confirm({
+        tenantId: this.tenantId,
+        kind: 'keysend',
+        channelId: options.channelId,
         operationId,
-      );
+        details: {
+          targetPublicKey: options.targetPublicKey,
+          amount: options.amount,
+          feeBudget: fee,
+          udtTypeScript: opening.terms.udtTypeScript ?? null,
+        },
+      });
       const authorization = this.authorization(
         network,
         null,
@@ -1560,7 +1774,6 @@ export class FiberLspClient {
         startVersions: versions(records),
         startBalances: [toHex(balances[0]), toHex(balances[1])],
         sent: true,
-        outcomeUnknown: true,
       };
       r.payments.push(p);
       await this.save(r);
@@ -1576,11 +1789,13 @@ export class FiberLspClient {
     this.controller = new AbortController();
     this.socket?.close();
     this.socket = undefined;
+    this.signingUpdates.clear();
+    this.nextSigningPollAt = 0;
     this.socketToken = undefined;
     this.paused = false;
     this.restored = false;
     this.reconnectAt = 0;
-    if (this.started) this.schedule(0);
+    this.schedule(0);
   }
   cleanup(): Promise<void> {
     if (this.cleanupPromise) return this.cleanupPromise;
@@ -1589,6 +1804,7 @@ export class FiberLspClient {
     this.clearTimer();
     this.socket?.close();
     this.socket = undefined;
+    this.signingUpdates.clear();
     this.listeners.clear();
     this.unlisten();
     // Every externally visible mutation was already committed before transport;
@@ -1599,6 +1815,7 @@ export class FiberLspClient {
         this.cleanupPromise = undefined;
         throw error;
       });
+    this.onCleanup?.(this.cleanupPromise);
     return this.cleanupPromise;
   }
 }

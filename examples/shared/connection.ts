@@ -4,17 +4,10 @@ import type {
   FundingTerms,
   FundingWallet,
   OutPoint,
-  TenantRegistration,
   Transaction,
 } from 'fiber-lsp-sdk';
 import { jsonStringify } from './types.ts';
-import type {
-  ChainCall,
-  ChainRpcResults,
-  DevnetConfig,
-  FundingTermsJson,
-  RegisterUserResult,
-} from './types.ts';
+import type { ChainCall, ChainRpcResults, DevnetConfig, FundingTermsJson } from './types.ts';
 
 /** Small HTTP boundary. Backend DTOs are shared; the SDK independently verifies chain/signing data. */
 export async function request<T>(baseUrl: string, path: string, value?: unknown): Promise<T> {
@@ -24,10 +17,7 @@ export async function request<T>(baseUrl: string, path: string, value?: unknown)
       ? {}
       : {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(typeof window === 'undefined' ? { Origin: new URL(baseUrl).origin } : {}),
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: jsonStringify(value),
         },
   );
@@ -45,15 +35,17 @@ export interface DevnetConnection {
   config: DevnetConfig;
   fiberLsp: FiberLspConfig;
   storageName: string;
-  registration: TenantRegistration;
   chain: ChainProvider;
 }
 export async function connectDevnet(baseUrl = window.location.origin): Promise<DevnetConnection> {
   const config = await request<DevnetConfig>(baseUrl, '/devnet/config');
-  const { wsUrl: _, ...httpLsp } = config.fiberLsp;
+  const { wsUrl: lspWsUrl, ...httpLsp } = config.fiberLsp;
+  const wsUrl = new URL('/devnet/ws', baseUrl);
+  wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   const fiberLsp: FiberLspConfig = {
     ...httpLsp,
-    rpcUrl: typeof window === 'undefined' ? httpLsp.rpcUrl : new URL('/devnet/rpc', baseUrl).href,
+    ...(lspWsUrl ? { wsUrl: wsUrl.href } : {}),
+    rpcUrl: new URL('/devnet/rpc', baseUrl).href,
     network: {
       ...config.fiberLsp.network,
       minimumShutdownFee: BigInt(config.fiberLsp.network.minimumShutdownFee),
@@ -63,9 +55,6 @@ export async function connectDevnet(baseUrl = window.location.origin): Promise<D
     config,
     fiberLsp,
     storageName: `fiber-sdk-devnet-${config.genesisHash}-${fiberLsp.nodePublicKey}`,
-    registration: {
-      register: (params) => request<RegisterUserResult>(baseUrl, '/devnet/register', params),
-    },
     chain: chainProvider(
       async <M extends keyof ChainRpcResults>(method: M, params: unknown[]) =>
         (
@@ -78,13 +67,17 @@ export async function connectDevnet(baseUrl = window.location.origin): Promise<D
   };
 }
 /** Example FundingWallet: the browser approves terms; the local backend holds the dev wallet key. */
-export function fundingWallet(userId: string, baseUrl = window.location.origin): FundingWallet {
+export function fundingWallet(
+  userId: string,
+  baseUrl = window.location.origin,
+  fundingAmount?: bigint,
+): FundingWallet {
   let approvedTerms: FundingTerms | undefined;
   const call = <T>(action: string, extra: Record<string, unknown> = {}) =>
     request<T>(baseUrl, '/devnet/wallet', { userId, action, ...extra });
   return {
     async getFundingTerms() {
-      const { closeFeeRate, ...terms } = await call<FundingTermsJson>('terms');
+      const { closeFeeRate, ...terms } = await call<FundingTermsJson>('terms', { fundingAmount });
       return {
         ...terms,
         fundingAmount: BigInt(terms.fundingAmount),

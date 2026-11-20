@@ -85,11 +85,14 @@ export interface BeginRegistrationConfig {
   tenantId?: string;
   fiberLsp: FiberLspConfig;
 }
+export type TenantCredentialStatus = 'unregistered' | 'available' | 'refreshRequired';
 export interface TenantInfo {
   tenantId: string;
   publicKey: string;
   fiberLsp: FiberLspConfig;
+  /** Whether initial registration finished. Check credentialStatus before using the credential. */
   ready: boolean;
+  credentialStatus: TenantCredentialStatus;
   createdAt: number;
   updatedAt: number;
 }
@@ -151,8 +154,11 @@ export interface ChannelInfo {
   tenantId: string;
   operationId: string;
   channelId: Hex | null;
+  /** Protocol state or local opening stage. */
   state: string;
+  /** The SDK verified funding and the local recovery signature. */
   ready: boolean;
+  /** The SDK verified both refunds on chain. */
   closed: boolean;
   localBalance: bigint;
   remoteBalance: bigint;
@@ -163,11 +169,13 @@ export interface ChannelInfo {
 }
 export interface PaymentInfo {
   tenantId: string;
+  /** Stable across recovery, including while the payment hash is unknown. */
   operationId: string;
   channelId: Hex;
   paymentHash: Hex | null;
   direction: PaymentDirection;
   status: string;
+  /** Local reconciliation finished. A successful payment also has status Success or Paid. */
   complete: boolean;
   amount: bigint;
   fee?: bigint;
@@ -213,13 +221,34 @@ export interface KeysendOptions {
   maxFee: bigint;
   maxFeeRate?: bigint;
 }
-export interface ConfirmationRequest {
-  tenantId: string;
-  kind: 'openChannel' | 'closeChannel' | 'payInvoice' | 'keysend' | 'sign';
-  channelId?: Hex;
-  operationId?: string;
-  details: Readonly<Record<string, unknown>>;
+interface ConfirmationDetails {
+  openChannel: { terms: FundingTerms };
+  closeChannel: {
+    /** Cooperative close fee in CKB shannons. */
+    fee: bigint;
+    localAmount: bigint;
+    remoteAmount: bigint;
+    shutdownScript: Script;
+    udtTypeScript: Script | null;
+  };
+  payInvoice: { invoice: ParsedInvoice; amount: bigint; feeBudget: bigint; maxFeeRate: bigint };
+  keysend: {
+    targetPublicKey: string;
+    amount: bigint;
+    feeBudget: bigint;
+    udtTypeScript: Script | null;
+  };
+  sign: { requestId: Hex; review?: Readonly<Record<string, unknown>> };
 }
+export type ConfirmationRequest = {
+  [Kind in keyof ConfirmationDetails]: {
+    tenantId: string;
+    kind: Kind;
+    channelId?: Hex;
+    operationId?: string;
+    details: Readonly<ConfirmationDetails[Kind]>;
+  };
+}[keyof ConfirmationDetails];
 export enum FiberLspEvent {
   ChannelChanged = 'channelChanged',
   BalanceChanged = 'balanceChanged',
@@ -254,10 +283,14 @@ export type WebSocketFactory = (
 export interface FiberLspOptions {
   storage: Storage;
   chain: ChainProvider;
+  /** Runs inside the tenant operation. Use the supplied details or listPayments() for local reads. */
   onConfirm: (request: ConfirmationRequest) => boolean | Promise<boolean>;
   fetch?: typeof fetch;
   webSocketFactory?: WebSocketFactory;
+  /** HTTP polling interval, also used while opening, closing or settling a payment. Default: 1500. */
   pollIntervalMs?: number;
+  /** Reconciliation interval with a healthy WebSocket. Pushes are processed immediately. Default: 15000. */
+  webSocketPollIntervalMs?: number;
   requestTimeoutMs?: number;
   now?: () => number;
   signingPolicy?: 'auto' | 'manual';

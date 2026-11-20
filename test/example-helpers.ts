@@ -12,6 +12,7 @@ export function devnetConfig(rpcUrl = config.rpcUrl): DevnetConfig {
     },
     wallet: {
       fundingAmount: '100000000000',
+      minFundingAmount: '10000000000',
       remoteFundingAmount: '100000000000',
       remoteLock: script,
       defaultLockDep: { out_point: { tx_hash: '0x0', index: '0x0' }, dep_type: 'dep_group' },
