@@ -4,9 +4,17 @@ TypeScript SDK for Fiber LSP tenant registration, channel management, payments, 
 
 [中文接入指南](docs/integration-zh.md) walks through the devnet demo and integrating the SDK into your own app.
 
-A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust `fiber-lsp-sdk` for validation, root identities, channel keys, MuSig2 signing, invoice parsing, and preimage release checks, pinned to Fiber commit `5da02c0d0843b5a690eb82a8cc915bf7b4438693`. TypeScript handles RPC, storage, events, recovery, and lifecycle management. The package builds ESM, type declarations, and WASM. It keeps `private: true` during development.
+A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust `fiber-lsp-sdk` for validation, root identities, channel keys, MuSig2 signing, invoice parsing, and preimage release checks, pinned to Fiber commit `5da02c0d0843b5a690eb82a8cc915bf7b4438693`. TypeScript handles RPC, storage, events, recovery, and lifecycle management.
 
 Existing hosted channels and pending openings from the previous signer format require the previous SDK to manage them. V2 uses fresh channel signer state. A registered identity with no channel keys can be reused.
+
+## Install
+
+```sh
+npm install fiber-lsp-sdk
+```
+
+The npm package ships ESM, TypeScript declarations, and compiled WASM. For Node.js, use version 24 or later.
 
 ## Build and check
 
