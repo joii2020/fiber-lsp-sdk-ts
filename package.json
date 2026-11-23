@@ -2,7 +2,6 @@
   "name": "fiber-lsp-sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for Fiber LSP tenant registration, channel management, payments, and recovery.",
-  "private": true,
   "type": "module",
   "license": "MIT",
   "keywords": [
