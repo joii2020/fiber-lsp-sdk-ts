@@ -82,7 +82,7 @@ test('opening and closing consume verified signing pushes without HTTP or signin
     requests.push(method);
     assert.notEqual(method, 'get_channel_signing_status');
     const result = await h.handleRpc(method, params);
-    if (method === 'submit_signed_funding_tx' || method === 'submit_channel_signature')
+    if (method === 'open_channel_with_external_funding' || method === 'submit_channel_signature')
       push(
         socket,
         h.f.proposal.channel_id,
@@ -145,17 +145,23 @@ test('opening and closing consume verified signing pushes without HTTP or signin
 
 test('a tampered pushed signing request cannot submit a signature', async (t) => {
   let h: ChannelHarness;
-  const transport = await wire(t, (method, params) => h.handleRpc(method, params));
+  const transport = await wire(t, (method, params) =>
+    method === 'get_channel_signing_status'
+      ? { channel_id: h.f.proposal.channel_id, status: { type: 'NoSignatureRequired' } }
+      : h.handleRpc(method, params),
+  );
   h = await channelHarness({ wsUrl: transport.url });
   t.after(() => h.lsp.cleanup(h.f.tenantId));
   const errors: Error[] = [];
   h.client.on(FiberLspEvent.Error, (error) => errors.push(error));
-  await h.client.openChannel({ wallet: h.wallet });
+  const opening = await h.client.openChannel({ wallet: h.wallet });
+  assert.equal(opening.needsWallet, true);
   const status = structuredClone(h.f.statuses[0]!);
   status.settlement.local_amount = `0x${(BigInt(status.settlement.local_amount) + 1n).toString(16)}`;
   push(transport.sockets[0]!, h.f.proposal.channel_id, status);
   await until(() => errors.some((e) => e instanceof FiberLspError && e.code === 'VERIFICATION'));
   assert.equal(h.calls.filter(([method]) => method === 'submit_channel_signature').length, 0);
+  assert.equal(h.calls.filter(([method]) => method === 'submit_signed_funding_tx').length, 0);
 });
 
 test('a silent WebSocket subscription still reconciles pending signatures', async (t) => {
@@ -182,21 +188,13 @@ test('a silent WebSocket subscription still reconciles pending signatures', asyn
 
 test('reconnecting replays and verifies pending signing requests', async (t) => {
   let h: ChannelHarness;
-  let replay = false;
-  const transport = await wire(t, async (method, params, socket) => {
+  const transport = await wire(t, (method, params) => {
     if (method === 'get_channel_signing_status')
       return {
         channel_id: h.f.proposal.channel_id,
         status: { type: 'NoSignatureRequired' },
       };
-    const result = await h.handleRpc(method, params);
-    if (replay && method === 'submit_channel_signature')
-      push(
-        socket,
-        h.f.proposal.channel_id,
-        h.f.statuses[h.getIndex()] ?? { type: 'NoSignatureRequired' },
-      );
-    return result;
+    return h.handleRpc(method, params);
   });
   h = await channelHarness({
     wsUrl: transport.url,
@@ -220,8 +218,17 @@ test('reconnecting replays and verifies pending signing requests', async (t) => 
   transport.sockets[0]!.terminate();
   await until(() => transport.subscriptions.length === 2);
   assert.equal(h.getIndex(), 0, 'signing waits for the pending request replay');
-  replay = true;
   push(transport.sockets[1]!, h.f.proposal.channel_id, h.f.statuses[h.getIndex()]);
+  await until(() => h.getIndex() === 1);
+  const pending = await h.client.openChannel({ wallet: h.wallet });
+  assert.equal(pending.needsWallet, true);
+  assert.equal(
+    h.calls.some(([method]) => method === 'submit_signed_funding_tx'),
+    false,
+  );
+  push(transport.sockets[1]!, h.f.proposal.channel_id, h.f.statuses[h.getIndex()]);
+  await until(() => h.getIndex() === 2);
+  await h.client.openChannel({ wallet: h.wallet });
   await until(() => ready);
   assert.equal(h.getIndex(), 2);
   assert.equal(

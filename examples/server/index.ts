@@ -21,7 +21,7 @@ import {
 
 import { root, tokenFile, readDevnetConfig } from './config.ts';
 export { readDevnetConfig } from './config.ts';
-const chainMethods = new Set(['get_transaction', 'get_live_cell']);
+const chainMethods = new Set(['get_transaction', 'get_live_cell', 'get_blockchain_info']);
 
 export function createDevnetHandler(
   config: DevnetConfig,
@@ -190,7 +190,7 @@ export function createDevnetHandler(
           !chainMethods.has(input.method) ||
           !Array.isArray(input.params)
         ) {
-          reply(400, { error: 'Only get_transaction and get_live_cell are supported' });
+          reply(400, { error: 'Unsupported chain query' });
           return true;
         }
         reply(200, { result: await rpc(config.ckbRpcUrl, input.method, input.params) });
@@ -231,15 +231,16 @@ export async function serve() {
     if (await handler(req, res, pathname)) return;
     const relative =
       pathname === '/'
-        ? 'examples/browser.html'
+        ? 'examples/ui/index.html'
         : pathname.startsWith('/example/')
           ? `.example/${pathname.slice('/example/'.length)}`
           : pathname.slice(1);
     if (
       pathname !== '/' &&
-      !pathname.startsWith('/example/browser/') &&
+      !pathname.startsWith('/example/ui/') &&
+      !pathname.startsWith('/example/business/') &&
       !pathname.startsWith('/example/shared/') &&
-      pathname !== '/examples/styles.css' &&
+      pathname !== '/examples/ui/styles.css' &&
       !pathname.startsWith('/dist/')
     ) {
       res.writeHead(404);

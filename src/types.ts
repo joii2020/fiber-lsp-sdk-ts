@@ -71,6 +71,8 @@ export interface TenantStatus {
 export interface RegisterLspTenantResult {
   tenant: TenantStatus;
   access_token: string;
+  /** Exclusive token expiry in Unix milliseconds. */
+  expires_at_ms: Hex;
 }
 export interface TenantRegistration {
   register(params: RegisterLspTenantParams): Promise<RegisterLspTenantResult>;
@@ -103,6 +105,8 @@ export interface ChainProvider {
   getTransaction(hash: Hex, network: NetworkConfig): Promise<Transaction | null>;
   /** Resolve funding inputs, including cells now spent by this exact transaction. */
   getCell(outPoint: OutPoint, network: NetworkConfig): Promise<Cell | null>;
+  /** Trusted CKB chain median time in Unix milliseconds, required for invoice preimage release. */
+  getMedianTime?(network: NetworkConfig): Promise<Hex>;
 }
 export interface FundingTerms {
   fundingAmount: bigint;

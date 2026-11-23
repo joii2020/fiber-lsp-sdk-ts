@@ -46,6 +46,7 @@ export function result(
       runtime_status: 'cold',
     },
     access_token: token,
+    expires_at_ms: '0x2540be40000',
   };
 }
 export const chain: ChainProvider = {

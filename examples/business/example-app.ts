@@ -1,19 +1,31 @@
-import { connectDevnet, request } from '../shared/connection.ts';
-import type { DevnetConnection } from '../shared/connection.ts';
 import type { CreateUserInput, NetworkStatus, User } from '../shared/types.ts';
 import { AccountSession } from './account-session.ts';
 import type { AccountCallbacks } from './account-session.ts';
+import { connectDevnet, request } from './connection.ts';
+import type { DevnetConnection } from './connection.ts';
+import { plaintextStorage } from './storage.ts';
 
 /** Application services for the demo. No panels, forms, dialogs or rendering. */
 export class ExampleApp {
-  readonly connection: DevnetConnection;
-  private readonly baseUrl: string;
+  static readonly usesPlaintextStorage = plaintextStorage;
   private readonly sessions = new Map<string, AccountSession>();
   users: User[] = [];
 
-  private constructor(connection: DevnetConnection, baseUrl: string) {
-    this.connection = connection;
-    this.baseUrl = baseUrl;
+  private constructor(
+    private readonly connection: DevnetConnection,
+    private readonly baseUrl: string,
+  ) {}
+
+  get accounts() {
+    return this.connection.config.accounts;
+  }
+
+  get ckbRpcUrl(): string {
+    return this.connection.config.ckbRpcUrl;
+  }
+
+  get minFundingAmount(): bigint {
+    return BigInt(this.connection.config.wallet.minFundingAmount);
   }
 
   static async connect(baseUrl: string): Promise<ExampleApp> {

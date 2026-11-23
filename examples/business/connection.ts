@@ -6,8 +6,13 @@ import type {
   OutPoint,
   Transaction,
 } from 'fiber-lsp-sdk';
-import { jsonStringify } from './types.ts';
-import type { ChainCall, ChainRpcResults, DevnetConfig, FundingTermsJson } from './types.ts';
+import { jsonStringify } from '../shared/types.ts';
+import type {
+  ChainCall,
+  ChainRpcResults,
+  DevnetConfig,
+  FundingTermsJson,
+} from '../shared/types.ts';
 
 /** Small HTTP boundary. Backend DTOs are shared; the SDK independently verifies chain/signing data. */
 export async function request<T>(baseUrl: string, path: string, value?: unknown): Promise<T> {
@@ -113,6 +118,9 @@ export function chainProvider(call: ChainCall): ChainProvider {
   };
   return {
     getTransaction,
+    async getMedianTime() {
+      return (await call('get_blockchain_info', [])).median_time;
+    },
     async getCell(point, network) {
       const tx = await getTransaction(point.tx_hash, network);
       const index = Number(BigInt(point.index));

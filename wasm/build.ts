@@ -90,11 +90,4 @@ run('wasm-bindgen', [
   '--out-name',
   'fiber_lsp_sdk_wasm',
 ]);
-let lock = await readFile(resolve(dirname(manifest), 'Cargo.lock'), 'utf8');
-if (source)
-  lock = lock.replace(
-    /(name = "fiber-(?:lsp-sdk|types|json-types)"\nversion = "[^"]+"\n)/g,
-    '$1source = "git+https://github.com/chenyukang/fiber?rev=76307312e8de518c9a32074e6d16867c04de4f86#76307312e8de518c9a32074e6d16867c04de4f86"\n',
-  );
-await writeFile(crateLock, lock);
 await writeFile(stamp, await fingerprint());

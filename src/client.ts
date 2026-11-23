@@ -57,6 +57,17 @@ import type {
 } from './types.js';
 const TAG = '0xffdc';
 const MAX_INVOICE_DESCRIPTION_BYTES = 639;
+function fundingCommitmentsExchanged(state: {
+  state_name?: string;
+  state_flags?: string;
+}): boolean {
+  if (stateName(state) !== 'SigningCommitment' || typeof state.state_flags !== 'string')
+    return false;
+  const flags = state.state_flags.split('|').map((flag) => flag.trim());
+  return (
+    flags.includes('OUR_COMMITMENT_SIGNED_SENT') && flags.includes('THEIR_COMMITMENT_SIGNED_SENT')
+  );
+}
 interface InvoiceCreationResult extends Record<string, unknown> {
   invoice_address: string;
   invoice: { data?: { payment_hash?: Hex } };
@@ -654,87 +665,92 @@ export class FiberLspClient {
     const poll = !pushedOnly && (!this.socket?.connected || this.now() >= this.nextSigningPollAt);
     if (poll)
       this.nextSigningPollAt = this.now() + (this.options.webSocketPollIntervalMs ?? 15_000);
-    for (const o of r.openings) {
-      const id = o.proposal?.channel_id;
-      if (
-        !id ||
-        o.stage === 'failed' ||
-        o.stage === 'closed' ||
-        !JSON.parse(r.signer.session).bindings[id]
-      )
-        continue;
-      const pushed = this.signingUpdates.get(id);
-      if (!pushed && !poll) continue;
-      this.guard();
-      if (o.close)
-        await this.action(r, { action: 'close', channelId: id, fee: toHex(o.close.fee) });
-      const result =
-        pushed ??
-        (await this.rpc<ChannelSigningUpdate>(r, 'get_channel_signing_status', { channel_id: id }));
-      check(
-        result.channel_id === id,
-        'VERIFICATION',
-        'Signing status belongs to a different channel',
-      );
-      if (result.status?.type !== 'SignatureRequired') {
-        if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
-        continue;
-      }
-      const requestId = String(result.status.request_id);
-      hash(requestId);
-      const previous = r.submissions[requestId];
-      if (previous) {
-        check(
-          previous.channelId === id && previous.statusHash === canonical(result.status),
-          'VERIFICATION',
-          'Signing request ID reused with different content',
-        );
-        if (pushed && previous.done) {
-          if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
-          continue;
-        }
-        await this.rpc(r, 'submit_channel_signature', previous.params);
-        previous.done = true;
-        await this.save(r);
-        if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
-        continue;
-      }
-      const command = {
-        action: 'sign',
-        channelId: id,
-        status: result.status,
-        now: toHex(this.now()),
-        manual: this.options.signingPolicy === 'manual',
-      };
-      let outcome = await this.action<SignOutcome>(r, command);
-      if (outcome.type === 'confirmation') {
-        await this.confirm({
-          tenantId: this.tenantId,
-          kind: 'sign',
-          channelId: id,
-          details: { requestId, review: outcome.review },
-        });
-        outcome = await this.action<SignOutcome>(r, {
-          ...command,
-          now: toHex(this.now()),
-          confirm: true,
-        });
-      }
-      if (outcome.type === 'submit') {
-        check(outcome.params, 'VERIFICATION', 'Signer returned no submission');
-        r.submissions[requestId] = {
-          channelId: id,
-          params: outcome.params,
-          statusHash: canonical(result.status),
-          done: false,
-        };
-        await this.save(r);
-        await this.rpc(r, 'submit_channel_signature', outcome.params);
-        r.submissions[requestId]!.done = true;
-        await this.save(r);
-      }
+    for (const opening of r.openings) await this.processChannelSignature(r, opening, poll);
+  }
+  private async processChannelSignature(
+    r: TenantRecord,
+    o: OpeningRecord,
+    poll: boolean,
+  ): Promise<boolean> {
+    const id = o.proposal?.channel_id;
+    if (
+      !id ||
+      o.stage === 'failed' ||
+      o.stage === 'closed' ||
+      !JSON.parse(r.signer.session).bindings[id]
+    )
+      return false;
+    const pushed = this.signingUpdates.get(id);
+    if (!pushed && !poll) return false;
+    this.guard();
+    if (o.close) await this.action(r, { action: 'close', channelId: id, fee: toHex(o.close.fee) });
+    const result =
+      pushed ??
+      (await this.rpc<ChannelSigningUpdate>(r, 'get_channel_signing_status', { channel_id: id }));
+    check(
+      result.channel_id === id,
+      'VERIFICATION',
+      'Signing status belongs to a different channel',
+    );
+    if (result.status?.type !== 'SignatureRequired') {
       if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+      return false;
     }
+    const requestId = String(result.status.request_id);
+    hash(requestId);
+    const previous = r.submissions[requestId];
+    if (previous) {
+      check(
+        previous.channelId === id && previous.statusHash === canonical(result.status),
+        'VERIFICATION',
+        'Signing request ID reused with different content',
+      );
+      if (pushed && previous.done) {
+        if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+        return false;
+      }
+      await this.rpc(r, 'submit_channel_signature', previous.params);
+      previous.done = true;
+      await this.save(r);
+      if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+      return true;
+    }
+    const command = {
+      action: 'sign',
+      channelId: id,
+      status: result.status,
+      now: toHex(this.now()),
+      manual: this.options.signingPolicy === 'manual',
+    };
+    let outcome = await this.action<SignOutcome>(r, command);
+    if (outcome.type === 'confirmation') {
+      await this.confirm({
+        tenantId: this.tenantId,
+        kind: 'sign',
+        channelId: id,
+        details: { requestId, review: outcome.review },
+      });
+      outcome = await this.action<SignOutcome>(r, {
+        ...command,
+        now: toHex(this.now()),
+        confirm: true,
+      });
+    }
+    if (outcome.type === 'submit') {
+      check(outcome.params, 'VERIFICATION', 'Signer returned no submission');
+      r.submissions[requestId] = {
+        channelId: id,
+        params: outcome.params,
+        statusHash: canonical(result.status),
+        done: false,
+      };
+      await this.save(r);
+      await this.rpc(r, 'submit_channel_signature', outcome.params);
+      r.submissions[requestId]!.done = true;
+      await this.save(r);
+    }
+    if (this.signingUpdates.get(id) === pushed) this.signingUpdates.delete(id);
+    return outcome.type === 'submit';
   }
   private async findUnknownKeysend(r: TenantRecord, p: PaymentRecord): Promise<void> {
     const tag = (p.request.custom_records as Record<string, string> | undefined)?.[TAG];
@@ -962,6 +978,7 @@ export class FiberLspClient {
           paymentHash: id,
           preimage: p.preimage,
           now: toHex(this.now()),
+          medianTime: await this.chainMedianTime(r),
           outPoint: point,
           cell,
         });
@@ -985,6 +1002,7 @@ export class FiberLspClient {
         paymentHash: id,
         preimage: p.preimage,
         now: toHex(this.now()),
+        medianTime: await this.chainMedianTime(r),
         outPoint: point,
         cell,
       });
@@ -1025,30 +1043,55 @@ export class FiberLspClient {
     } else await this.save(r);
     return p.info;
   }
+  private async chainMedianTime(r: TenantRecord): Promise<Hex> {
+    const chain = this.options.chain;
+    check(
+      chain.getMedianTime,
+      'VERIFICATION',
+      'A trusted chain median time is required to release a preimage',
+    );
+    const time = await this.wait(chain.getMedianTime(r.info.fiberLsp.network));
+    check(fromHex(time) > 0n, 'VERIFICATION', 'Invalid chain median time');
+    return time;
+  }
+  private async advanceFunding(
+    r: TenantRecord,
+    opening: OpeningRecord,
+    channel: Record<string, any>,
+  ): Promise<void> {
+    const { proposal, signedTransaction: signed } = opening;
+    check(
+      proposal && signed && sameRaw(signed, proposal.unsigned_funding_tx),
+      'CORRUPT_DATA',
+      'Stored funding transaction changed',
+    );
+    if (fundingCommitmentsExchanged(channel.state)) {
+      const result = await this.rpc<{ channel_id: Hex; funding_tx_hash: Hex }>(
+        r,
+        'submit_signed_funding_tx',
+        { channel_id: proposal.channel_id, signed_funding_tx: signed },
+      );
+      check(
+        result.channel_id === proposal.channel_id && result.funding_tx_hash === opening.fundingHash,
+        'VERIFICATION',
+        'Funding submission response changed the channel or transaction',
+      );
+    } else if (
+      !['AwaitingTxSignatures', 'AwaitingChannelReady', 'ChannelReady'].includes(
+        stateName(channel.state),
+      )
+    ) {
+      return;
+    }
+    opening.stage = 'submitted';
+    await this.save(r);
+  }
   private async resume(r: TenantRecord, channels: Record<string, any>[]): Promise<void> {
     for (const o of r.openings)
       if (o.stage === 'signed' && o.proposal && o.signedTransaction) {
         const c = channels.find((c) => c.channel_id === o.proposal!.channel_id);
         if (!c || c.failure_detail) continue;
-        check(
-          sameRaw(o.signedTransaction, o.proposal.unsigned_funding_tx),
-          'CORRUPT_DATA',
-          'Stored funding transaction changed',
-        );
-        if (stateName(c.state) === 'NegotiatingFunding') {
-          const result = await this.rpc<{ channel_id: Hex; funding_tx_hash: Hex }>(
-            r,
-            'submit_signed_funding_tx',
-            { channel_id: o.proposal.channel_id, signed_funding_tx: o.signedTransaction },
-          );
-          check(
-            result.channel_id === o.proposal.channel_id && result.funding_tx_hash === o.fundingHash,
-            'VERIFICATION',
-            'Resumed funding response changed identity',
-          );
-        }
-        o.stage = 'submitted';
-        await this.save(r);
+        await this.advanceFunding(r, o, c);
       }
     for (const p of r.payments)
       if (!p.sent && !p.info.complete && p.authorization) {
@@ -1325,14 +1368,29 @@ export class FiberLspClient {
           inputs: approved,
           network: rpcNetwork(r.info.fiberLsp.network),
         });
-        const current = (await this.queryChannels(r)).find(
-          (c) => c.channel_id === proposal.channel_id,
-        );
+        // Each opening lane can become available as soon as the previous one is submitted.
+        for (let lane = 0; lane < 2; lane++) {
+          if (!(await this.processChannelSignature(r, opening, true))) break;
+        }
+        const channels = await this.queryChannels(r);
+        const current = channels.find((c) => c.channel_id === proposal.channel_id);
         check(
-          current && !current.failure_detail && stateName(current.state) === 'NegotiatingFunding',
+          current &&
+            !current.failure_detail &&
+            ['NegotiatingFunding', 'SigningCommitment'].includes(stateName(current.state)),
           'VERIFICATION',
           'Server no longer accepts this funding proposal',
         );
+        if (
+          !fundingCommitmentsExchanged(current.state) ||
+          !(await this.action<boolean>(r, {
+            action: 'openingExitVerified',
+            channelId: proposal.channel_id,
+          }))
+        ) {
+          await this.updateChannels(r, channels);
+          return clone(opening.info);
+        }
         const signed = await this.wait(
           wallet.signFundingTransaction(clone(proposal.unsigned_funding_tx)),
         );
@@ -1356,21 +1414,7 @@ export class FiberLspClient {
           'VERIFICATION',
           'Funding operation failed or is no longer available',
         );
-        if (stateName(current.state) === 'NegotiatingFunding') {
-          const result = await this.rpc<{ channel_id: Hex; funding_tx_hash: Hex }>(
-            r,
-            'submit_signed_funding_tx',
-            { channel_id: proposal.channel_id, signed_funding_tx: opening.signedTransaction },
-          );
-          check(
-            result.channel_id === proposal.channel_id &&
-              result.funding_tx_hash === opening.fundingHash,
-            'VERIFICATION',
-            'Funding submission response changed the channel or transaction',
-          );
-        }
-        opening.stage = 'submitted';
-        await this.save(r);
+        await this.advanceFunding(r, opening, current);
       }
       await this.sync(r);
       return clone(opening.info);

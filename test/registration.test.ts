@@ -41,6 +41,13 @@ test('registration proof, result validation and client caching', async () => {
     /empty/,
   );
   await assert.rejects(lsp.finishRegistration(p.tenantId, result(p.tenantId, key)), /identity/);
+  await assert.rejects(
+    lsp.finishRegistration(p.tenantId, {
+      ...result(p.tenantId, p.params.root_signer_pubkey),
+      expires_at_ms: '0x0',
+    }),
+    /expiry/,
+  );
   const info = await lsp.finishRegistration(
     p.tenantId,
     result(p.tenantId, p.params.root_signer_pubkey),
@@ -161,6 +168,21 @@ test('debug registration uses explicit admin bearer, validates response and does
   assert.equal(seen!.options.headers.authorization, 'Bearer admin-secret');
   assert.deepEqual(seen!.p, params);
   await assert.rejects(debugRegisterTenant({ rpcUrl: config.rpcUrl, token: ' ', params }), /empty/);
+});
+test('upgrades an identity-only signer record from the previous WASM store format', async () => {
+  const { lsp, storage } = make();
+  const info = await register(lsp);
+  const [saved] = await storage.list<TenantRecord>('tenant/');
+  const previous = JSON.parse(saved.value.signer.session);
+  delete previous.token_expires_at_ms;
+  saved.value.signer.session = JSON.stringify(previous);
+  saved.value.signer.snapshot = saved.value.signer.snapshot.slice('v2:'.length);
+  await storage.commit([saved]);
+
+  const pending = await lsp.beginRegistration({ tenantId: info.tenantId, fiberLsp: config });
+  assert.equal(pending.params.root_signer_pubkey, info.publicKey);
+  const [upgraded] = await storage.list<TenantRecord>('tenant/');
+  assert.match(upgraded.value.signer.snapshot, /^v2:/);
 });
 test('corrupt records and mismatched root keys never create a replacement identity', async () => {
   const { lsp, storage } = make();

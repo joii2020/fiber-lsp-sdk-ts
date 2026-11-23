@@ -2,9 +2,11 @@
 
 TypeScript SDK for Fiber LSP tenant registration, channel management, payments, and recovery.
 
-[中文接入指南](docs/integration.md) walks through the devnet demo and integrating the SDK into your own app.
+[中文接入指南](docs/integration-zh.md) walks through the devnet demo and integrating the SDK into your own app.
 
-A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust `fiber-lsp-sdk` for validation, root identities, channel keys, MuSig2 signing, invoice parsing, and preimage release checks, pinned to Fiber commit `76307312e8de518c9a32074e6d16867c04de4f86`. TypeScript handles RPC, storage, events, recovery, and lifecycle management. The package builds ESM, type declarations, and WASM. It keeps `private: true` during development.
+A browser and Node.js client for section 3 of `fiber-lsp-sdk.md`. It reuses Rust `fiber-lsp-sdk` for validation, root identities, channel keys, MuSig2 signing, invoice parsing, and preimage release checks, pinned to Fiber commit `5da02c0d0843b5a690eb82a8cc915bf7b4438693`. TypeScript handles RPC, storage, events, recovery, and lifecycle management. The package builds ESM, type declarations, and WASM. It keeps `private: true` during development.
+
+Existing hosted channels and pending openings from the previous signer format require the previous SDK to manage them. V2 uses fresh channel signer state. A registered identity with no channel keys can be reused.
 
 ## Build and check
 
@@ -57,7 +59,7 @@ client.on(FiberLspEvent.Error, app.showError);
 app.showChannels(await client.listChannels());
 ```
 
-The registration backend returns the raw `{ tenant, access_token }`. The SDK saves the local identity and proof before sending the request. It marks the tenant `ready` only after checking the tenant ID, root public key, invoice public key, and nonempty token. If registration fails, find the pending record with `listTenants()` and resume with the same `tenantId`. Existing tenants can create a client directly. Pass `refresh: true` to `setup` to force a token refresh; a 401/403 response automatically marks the token for refresh.
+The registration backend returns `{ tenant, access_token, expires_at_ms }`. The expiry is a hex Unix timestamp in milliseconds. The SDK saves the local identity and proof before sending the request. It verifies the tenant ID and public keys, then saves the token and expiry before marking the tenant `ready`. If registration fails, find the pending record with `listTenants()` and resume with the same `tenantId`. Existing tenants can create a client directly. Pass `refresh: true` to `setup` to force a token refresh. A 401/403 response automatically marks the token for refresh.
 
 `TenantInfo.ready` records that registration finished. `credentialStatus` is `unregistered` before registration, `available` after registration or refresh, and `refreshRequired` after the LSP rejects the credential. When resuming or refreshing an existing tenant, `setup` checks the saved HTTP RPC URL, LSP public key, and network. Use `setWebSocketUrl` to update the saved WebSocket endpoint.
 
@@ -88,6 +90,7 @@ These values are examples. Use the actual network and deployment configuration. 
 - `getTransaction(hash, network)`: independently verifies the full confirmed transaction; returns `null` if unconfirmed.
 - `getLiveCell(outPoint, network)`: reads an unspent Cell from a trusted chain source; returns `{ output, data }` or `null`.
 - `getCell(outPoint, network)`: independently resolves funding inputs, including Cells already spent by the funding transaction.
+- `getMedianTime(network)` returns the trusted CKB chain median time as a hex Unix timestamp in milliseconds. Apps that receive payments must provide it. The example reads `median_time` from CKB's `get_blockchain_info` RPC.
 
 ```typescript
 const channel = await client.openChannel({ wallet });
@@ -103,7 +106,9 @@ const channel = await client.openChannel({ wallet });
 
 In `onConfirm`, check `request.kind` to access the typed details for that operation. Use `feeBudget` for the maximum payment fee and the UDT script to determine the asset for displayed amounts. The callback runs within the tenant's operation lock. It can read saved records with `listPayments()`. Wait for the operation to finish before calling methods that reconcile state, such as `listChannels()` or `getPayment()`.
 
-Opening returns an operation ID and current state. `ready: true` requires server readiness, trusted on-chain funding checks, and a complete local recovery signature. If a wallet is missing during opening, `ChannelInfo.needsWallet` is `true`; call `openChannel({ wallet })` again to resume the same operation. Recovery can resubmit a signed funding transaction and keeps its original hash if the result is unknown. Use `openChannel({ wallet, newChannel: true })` to add another channel under the same tenant. An unfinished opening is resumed first, using its original signer and terms. Without `newChannel`, calling open again returns the latest channel or resumes an unfinished opening. Failed or closed openings allow a fresh channel after user approval.
+Opening returns an operation ID and current state. The SDK waits for both parties to exchange V2 commitment signatures and verifies a complete local commitment before asking the wallet to sign the funding transaction. When `ChannelInfo.needsWallet` is `true`, call `openChannel({ wallet })` again with the original wallet to resume the same operation. This can happen while the initial commitment exchange is still in progress. Enable payments when `ready` is `true`, after the SDK verifies channel readiness and on-chain funding.
+
+Recovery can resubmit a signed funding transaction and keeps its original hash if the result is unknown. Use `openChannel({ wallet, newChannel: true })` to add another channel under the same tenant. An unfinished opening is resumed first, using its original signer and terms. Without `newChannel`, calling open again returns the latest channel or resumes an unfinished opening. Failed or closed openings allow a fresh channel after user approval.
 
 ```typescript
 await client.closeChannel(channel.channelId!);
@@ -148,13 +153,18 @@ The WebSocket URL is never inferred from the HTTP URL. Existing HTTP tenants can
 
 ```typescript
 await storage.changePassword({ oldPassword, newPassword });
-const backup = await storage.exportBackup(backupPassword);
-await anotherStorage.importBackup(backup, backupPassword);
 storage.lock();
 await storage.unlock(); // BrowserStorage calls onUnlock as needed.
 ```
 
 Changing the password replaces only the wrapped encryption key record. A failed transaction keeps the old record; success locks storage and notifies other tabs. Backups contain root keys, signing snapshots, sessions, and operation records, encrypted as a whole. Import preserves the original identity and refuses to overwrite existing records. Earlier backups still use their original backup password. `MemoryStorage` also supports encrypted backup and import.
+
+For a V2 signer move, stop clients using the source store and export its latest state. Resume signing only from the destination store after import. Restoring older state or running two writable copies of the same signer can reuse MuSig2 nonces and expose the channel funding key.
+
+```typescript
+const backup = await storage.exportBackup(backupPassword);
+await anotherStorage.importBackup(backup, backupPassword);
+```
 
 Custom persistent storage must follow the [Storage](src/storage.ts) interface: batch `commit` and CAS conditions must share a transaction; `withLock` must cover all instances, processes, or tabs sharing storage; `getRootKey` must return an independent byte copy; and locking must notify the SDK. The default browser implementation uses Web Locks and BroadcastChannel. The SDK saves the full Rust signing snapshot with the session. A failed save stops further requests or signature submissions.
 
@@ -174,7 +184,7 @@ For a client created by the manager, `client.cleanup()` and `lsp.cleanup(tenantI
 
 The Shell scripts in [examples/devnet/](examples/devnet/README.md) call offckb directly to manage CKB and three Fiber nodes, with LSP enabled on Node3. Run them with `sh`. During setup, `configure.ts` uses the project's `js-yaml` dependency to update node configuration, and biscuit-cli 0.6 issues the operator token.
 
-First setup:
+Before running `init.sh`, prepare a compatible `fnn` executable. `FNN_PATH` defaults to `../fiber/target/release/fnn` relative to the SDK repository root. Set `FNN_PATH` in [examples/devnet/config.sh](examples/devnet/config.sh) if your executable is elsewhere.
 
 ```sh
 sh examples/devnet/init.sh  # Initialize offckb nodes, configure LSP, and start.
@@ -185,9 +195,9 @@ The example startup script sends SIGTERM to the process listening on port 8008, 
 
 `sh examples/devnet/stop.sh` stops Fiber and CKB while keeping data. Use `sh examples/devnet/start.sh` to start again. As in fiber-lab, the startup script calls offckb directly; stop before restarting.
 
-`sh examples/devnet/clean.sh` stops nodes and removes offckb data and this project's `.devnet/`. `sh examples/devnet/reset.sh` cleans, rebuilds fnn, initializes, and starts the environment.
+`sh examples/devnet/clean.sh` stops nodes and removes offckb data and this project's `.devnet/`. `sh examples/devnet/reset.sh` cleans, initializes with the configured `fnn`, and starts the environment.
 
-The scripts use `../fiber/target/release/fnn` and save the operator token in `.devnet/keys/operator-token`. When using a custom offckb directory, use the same XDG environment variables for scripts and the example server. See the [devnet script guide](examples/devnet/README.md).
+The scripts save the operator token in `.devnet/keys/operator-token`. When using a custom offckb directory, use the same XDG environment variables for scripts and the example server. See the [devnet script guide](examples/devnet/README.md).
 
 The page header shows CKB/LSP connection status, block height, user count, and an “Add user” dialog. Each of the two panels selects a user and runs an independent SDK client.
 
@@ -203,14 +213,14 @@ User profiles are stored in `.devnet/example-users.json` (override with `EXAMPLE
 
 Tenant keys, signing snapshots, and operation state are stored per user in IndexedDB. HTTPS/localhost uses the SDK's `BrowserStorage` to encrypt root private keys; plain HTTP uses the example's plaintext storage with a `-plaintext` database suffix. Payment records for display are stored in localStorage. For a local experience without passwords, the example uses a fixed, derivable development unlock password. **It provides no password protection and is for devnet use only.** offckb wallet private keys are read only for backend signing; they are never written to the user JSON or sent to the browser. Clearing browser data loses tenant keys, which the JSON user file cannot restore. Use the same browser and site address (`localhost` and `127.0.0.1` are different origins). Leaving one panel only hides it; started clients keep processing pending payments.
 
-See [examples/README.md](examples/README.md) for integration details and [AccountSession](examples/browser/account-session.ts) for the SDK lifecycle.
+See [examples/README.md](examples/README.md) for integration details and [AccountSession](examples/business/account-session.ts) for the SDK lifecycle.
 
 Directory layout:
 
-- `examples/browser/`: TypeScript page logic, amount conversion, and independent SDK account sessions.
-- `examples/shared/`: shared types and adapters for registration, trusted chain queries, and funding wallets.
+- `examples/ui/` contains the page, styles, forms, and rendering. It calls the business layer for user and payment operations.
+- `examples/business/` manages users and account sessions, integrates the SDK, and provides browser storage, chain, and funding wallet adapters.
+- `examples/shared/` contains the request and response types shared with the backend.
 - `examples/server/`: TypeScript HTTP backend, trusted configuration, JSON user storage, and offckb wallet verification and signing.
-- `examples/browser.html`, `examples/styles.css`: page structure and styles; the SDK loads through an import map.
 - `examples/devnet/`: offckb scripts to initialize, start, stop, clean, and reset the local environment.
 
 `pnpm example` builds the SDK into `dist/`, compiles browser code into `.example/`, and runs the TypeScript backend directly. After browser changes, run `pnpm exec tsc -p examples/tsconfig.browser.json` and refresh. After backend changes, restart the example. App source files use `.ts`; environment scripts use `.sh`. The SDK's `.js` import suffixes and generated JavaScript follow ESM build conventions.

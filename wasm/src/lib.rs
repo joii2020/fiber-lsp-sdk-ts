@@ -3,14 +3,85 @@
 #![forbid(unsafe_code)]
 use ckb_types::{packed, prelude::*};
 use fiber_lsp_sdk::{
-    ChainVerifier, FundingVerifier, HostedSession, HostedSessionState, MemoryStore, OpeningNetwork,
+    ChainVerifier, FundingVerifier, HostedSession, HostedSessionState, OpeningNetwork,
     OpeningPersistence, ProcessOutcome, RootKey, RootSigner, SessionError, SignerError,
-    SigningPolicy, SubmitParams, TenantOpeningRpc, VerifiedCell,
+    SignerStore, SigningPolicy, SubmitParams, TenantOpeningRpc, VerifiedCell,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::{cell::RefCell, collections::BTreeMap, convert::Infallible, rc::Rc};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
+
+const V2_STORE_PREFIX: &str = "v2:";
+type StoreEntries = BTreeMap<Vec<u8>, Vec<u8>>;
+
+// One command edits a private copy. TypeScript commits these entries and the
+// session together under the tenant lock before using any returned signature.
+#[derive(Clone, Default)]
+struct CommandStore(Rc<RefCell<StoreEntries>>);
+
+impl CommandStore {
+    fn decode(snapshot: &str) -> Result<Self, JsValue> {
+        let (encoded, legacy) = match snapshot.strip_prefix(V2_STORE_PREFIX) {
+            Some(encoded) => (encoded, false),
+            None => (snapshot, true),
+        };
+        let bytes = Zeroizing::new(hex::decode(encoded).map_err(err)?);
+        let entries: StoreEntries = bincode::deserialize(&bytes).map_err(err)?;
+        if legacy
+            && (entries.len() != 1
+                || !entries.contains_key(b"fiber-lsp-sdk/signer/metadata".as_slice()))
+        {
+            return Err(err(
+                "previous Fiber LSP channel signer state is incompatible with V2",
+            ));
+        }
+        Ok(Self(Rc::new(RefCell::new(entries))))
+    }
+
+    fn encode(&self) -> Result<String, JsValue> {
+        let bytes = Zeroizing::new(bincode::serialize(&*self.0.borrow()).map_err(err)?);
+        Ok(format!("{V2_STORE_PREFIX}{}", hex::encode(&*bytes)))
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl SignerStore for CommandStore {
+    type Error = Infallible;
+
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.0.borrow().get(key).cloned())
+    }
+
+    async fn insert_if_absent(&self, key: &[u8], value: &[u8]) -> Result<bool, Self::Error> {
+        self.compare_and_swap(key, None, value).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool, Self::Error> {
+        let mut entries = self.0.borrow_mut();
+        if entries.get(key).map(Vec::as_slice) != expected {
+            return Ok(false);
+        }
+        entries.insert(key.to_vec(), replacement.to_vec());
+        Ok(true)
+    }
+
+    async fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().insert(key.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    async fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().remove(key);
+        Ok(())
+    }
+}
 
 fn err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
@@ -43,19 +114,17 @@ fn secret(bytes: &[u8]) -> Result<RootKey, JsValue> {
     .map_err(err)
 }
 fn envelope(
-    store: &MemoryStore,
-    session: &HostedSession<MemoryStore>,
+    store: &CommandStore,
+    session: &HostedSession<CommandStore>,
     value: Value,
 ) -> Result<String, JsValue> {
-    Ok(
-        json!({"snapshot":hex::encode(store.snapshot().map_err(err)?),
+    Ok(json!({"snapshot":store.encode()?,
         "session":serde_json::to_string(session.state()).map_err(err)?, "value":value})
-        .to_string(),
-    )
+    .to_string())
 }
 #[wasm_bindgen]
 pub async fn create_identity() -> Result<String, JsValue> {
-    let store = MemoryStore::default();
+    let store = CommandStore::default();
     let created = RootSigner::create_random(store.clone())
         .await
         .map_err(err)?;
@@ -148,6 +217,7 @@ impl OpeningPersistence for Opening {
 struct FundingCell {
     point: packed::OutPoint,
     cell: VerifiedCell,
+    median_time_ms: u64,
 }
 #[async_trait::async_trait(?Send)]
 impl ChainVerifier for FundingCell {
@@ -174,9 +244,7 @@ impl ChainVerifier for FundingCell {
         ))
     }
     async fn median_time_ms(&self) -> Result<u64, SignerError> {
-        Err(SignerError::InvalidContent(
-            "on-chain spending is unsupported".into(),
-        ))
+        Ok(self.median_time_ms)
     }
 }
 
@@ -188,8 +256,7 @@ pub async fn execute(
     command: &str,
 ) -> Result<String, JsValue> {
     let root = Zeroizing::new(root);
-    let bytes = hex::decode(snapshot).map_err(err)?;
-    let store = MemoryStore::from_snapshot(&bytes).map_err(err)?;
+    let store = CommandStore::decode(snapshot)?;
     let signer = RootSigner::open(secret(&root)?, store.clone())
         .await
         .map_err(err)?;
@@ -327,12 +394,15 @@ pub async fn execute(
             }
             Value::Null
         }
-        "fulfill" | "cancel" | "release" | "close" | "records" => {
+        "fulfill" | "cancel" | "release" | "close" | "records" | "openingExitVerified" => {
             let signer = session
                 .channel_signer(decode(c["channelId"].clone())?)
                 .await
                 .map_err(err)?;
             match text(&c, "action")? {
+                "openingExitVerified" => {
+                    json!(signer.has_verified_opening_exit().await.map_err(err)?)
+                }
                 "fulfill" => {
                     signer
                         .authorize_fulfillment(
@@ -367,6 +437,7 @@ pub async fn execute(
                         decode(c["cell"]["output"].clone())?;
                     let chain = FundingCell {
                         point: point.into(),
+                        median_time_ms: u64v(&c, "medianTime")?,
                         cell: VerifiedCell {
                             output: output.into(),
                             data: hex::decode(text(&c["cell"], "data")?.trim_start_matches("0x"))

@@ -8,9 +8,10 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
-fiber-lsp-sdk = { git = "https://github.com/chenyukang/fiber", rev = "76307312e8de518c9a32074e6d16867c04de4f86" }
-fiber-types = { git = "https://github.com/chenyukang/fiber", rev = "76307312e8de518c9a32074e6d16867c04de4f86", features = ["watchtower"] }
-fiber-json-types = { git = "https://github.com/chenyukang/fiber", rev = "76307312e8de518c9a32074e6d16867c04de4f86", features = ["conversion", "watchtower"] }
+fiber-lsp-sdk = { git = "https://github.com/chenyukang/fiber", rev = "5da02c0d0843b5a690eb82a8cc915bf7b4438693" }
+fiber-types = { git = "https://github.com/chenyukang/fiber", rev = "5da02c0d0843b5a690eb82a8cc915bf7b4438693", features = ["watchtower"] }
+fiber-json-types = { git = "https://github.com/chenyukang/fiber", rev = "5da02c0d0843b5a690eb82a8cc915bf7b4438693", features = ["conversion", "watchtower"] }
+bincode = "1.3.3"
 ckb-types = "1"
 ckb-jsonrpc-types = "1"
 serde = { version = "1", features = ["derive"] }

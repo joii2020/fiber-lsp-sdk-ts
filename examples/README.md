@@ -6,6 +6,8 @@ This directory provides a working payment demo with two accounts and an SDK inte
 
 Requires Node.js 24, pnpm 11, offckb with Fiber node support, matching Fiber source, and a Rust build environment. fiber-lab is not required.
 
+Before initialization, build the matching `fnn` and check the `FNN_PATH` setting. [Devnet build instructions](devnet/README.md)
+
 ```sh
 pnpm install
 # Initialize and start once; use start.sh to restart an existing environment.
@@ -27,7 +29,7 @@ Node1, Node2, and Node3 (LSP) use #3, #4, and #5. When adding users, preallocate
 
 Run `sh examples/devnet/stop.sh` when done. Use `sh examples/devnet/start.sh` next time to keep using the same data.
 
-`sh examples/devnet/clean.sh` removes node data and this project's `.devnet/`. `sh examples/devnet/reset.sh` cleans, rebuilds, initializes, and starts the environment.
+`sh examples/devnet/clean.sh` removes node data and this project's `.devnet/`. `sh examples/devnet/reset.sh` cleans, initializes with the configured `fnn`, and starts the environment.
 
 ```sh
 pnpm typecheck      # Check the SDK, examples, build scripts, and all tests.
@@ -38,28 +40,29 @@ pnpm test           # Run Node tests.
 
 ## Where to start
 
-The [Chinese integration guide](../docs/integration.md) covers the SDK call flow and the interfaces your app supplies.
+The [Chinese integration guide](../docs/integration-zh.md) covers the SDK call flow and the interfaces your app supplies.
 
-**For SDK usage, start with [browser/account-session.ts](browser/account-session.ts).** It covers setup, identity recovery, registration, event subscriptions, channel opening, payments, and cleanup. No page code is needed first.
+**For SDK usage, start with [business/account-session.ts](business/account-session.ts).** It covers setup, identity recovery, registration, event subscriptions, channel opening, payments, and cleanup.
 
 **For backend tenant token registration and refresh, see [server/registration.ts](server/registration.ts).** It is independent of HTTP routes, offckb, and JSON user storage, and can be imported into your own backend.
 
-The browser example has three layers: `app.ts` handles the UI, `example-app.ts` manages users and sessions, and `account-session.ts` integrates the SDK. The UI calls methods to start operations, reads state through `onChange`, and turns events into messages through `onEvent`. `onConfirm` supplies signing approval.
+The browser example follows `ui/ → business/ → fiber-lsp-sdk`. The UI calls `ExampleApp` for user management and `AccountSession` for tenant, channel, and payment operations. It renders state through `onChange`, turns events into messages through `onEvent`, and supplies signing approval through `onConfirm`. The business layer uses `server/` over HTTP for demo services such as user storage, tenant registration, and wallet signing.
 
-| File                                                     | Purpose                                                                                                                    |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| [browser/account-session.ts](browser/account-session.ts) | Full SDK integration: per-user storage, registration, events, channels, payments, recovery, and cleanup; no DOM dependency |
-| [browser/example-app.ts](browser/example-app.ts)         | User creation, deletion, and loading; network status, session reuse, and background refresh; no DOM dependency             |
-| [shared/connection.ts](shared/connection.ts)             | Configures browser RPC and implements the `ChainProvider` and `FundingWallet` adapters                                      |
-| [shared/types.ts](shared/types.ts)                       | Shared user, connection, and JSON DTO types; amounts are sent as strings                                                   |
-| [browser/app.ts](browser/app.ts)                         | Account panels, forms, confirmations, messages, and rendering; no direct SDK or backend calls                              |
-| [browser/amount.ts](browser/amount.ts)                   | Exact CKB/shannon conversion without floating-point arithmetic                                                             |
-| [server/index.ts](server/index.ts)                       | HTTP routes, static files, and tenant RPC forwarding                                                                       |
-| [server/registration.ts](server/registration.ts)         | Tenant token registration and refresh, user identity binding; accepts the LSP URL, operator token source, and user store   |
-| [server/config.ts](server/config.ts)                     | Reads trusted chain parameters and LSP details from the local deployment                                                   |
-| [server/users.ts](server/users.ts)                       | JSON user storage, unique account bindings, and atomic writes                                                              |
-| [server/wallet.ts](server/wallet.ts)                     | offckb wallet balances, funding verification, and default lock signing                                                     |
-| [devnet/](devnet/README.md)                              | Shell scripts to initialize, start, stop, clean, and reset offckb                                                          |
+| File                                                            | Purpose                                                                            |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [ui/index.html](ui/index.html) · [ui/styles.css](ui/styles.css) | Page structure and styles                                                          |
+| [ui/app.ts](ui/app.ts) · [ui/amount.ts](ui/amount.ts)           | Account panels, forms, confirmations, rendering, and precise CKB input and display |
+| [business/example-app.ts](business/example-app.ts)              | User management, network status, session reuse, and refresh                        |
+| [business/account-session.ts](business/account-session.ts)      | SDK lifecycle, tenant registration, events, channels, payments, and recovery       |
+| [business/connection.ts](business/connection.ts)                | Browser RPC configuration and the `ChainProvider` and `FundingWallet` adapters     |
+| [business/storage.ts](business/storage.ts)                      | Browser storage for SDK identities and operation state                             |
+| [shared/types.ts](shared/types.ts)                              | User and connection types and JSON types shared with the backend                   |
+| [server/index.ts](server/index.ts)                              | HTTP routes, static files, and tenant RPC forwarding                               |
+| [server/registration.ts](server/registration.ts)                | Tenant token registration and refresh, and user identity binding                   |
+| [server/config.ts](server/config.ts)                            | Trusted chain parameters and LSP details from the local deployment                 |
+| [server/users.ts](server/users.ts)                              | JSON user storage, unique account bindings, and atomic writes                      |
+| [server/wallet.ts](server/wallet.ts)                            | offckb wallet balances, funding verification, and default lock signing             |
+| [devnet/](devnet/README.md)                                     | Shell scripts to initialize, start, stop, clean, and reset offckb                  |
 
 ## SDK integration flow
 
@@ -67,11 +70,11 @@ Read `AccountSession` first, then replace the three adapters for your app. The p
 
 Follow `restore → register → attachClient → openChannel / createInvoice / payInvoice → dispose` for the full call flow. The internal `attachClient` method shows how to subscribe before the first query.
 
-`AccountSession` works on its own in a browser on the same origin, without loading `app.ts` or creating page elements. For an existing example user `user`:
+`AccountSession` can run on the demo origin independently of the page. For an existing example user `user`:
 
 ```ts
-import { AccountSession } from './browser/account-session.ts';
-import { connectDevnet } from './shared/connection.ts';
+import { AccountSession } from './business/account-session.ts';
+import { connectDevnet } from './business/connection.ts';
 
 const baseUrl = window.location.origin;
 const connection = await connectDevnet(baseUrl);
@@ -92,7 +95,7 @@ try {
 
 ### 1. Create a persistent identity for each user
 
-`AccountSession.restore()` creates separate IndexedDB storage for each user, then constructs `fiberlsp`. Secure contexts use `BrowserStorage`. Plain HTTP uses the plaintext implementation in `browser/storage.ts`, with a `-plaintext` database suffix, and never reads or overwrites encrypted databases. HTTP mode uses separate IndexedDB read/write transactions for locking across tabs. It keeps transactions alive with repeated requests during asynchronous work. This fallback is for the example only. Browser storage does not migrate automatically when the protocol, host, or port changes. App user IDs, LSP tenant IDs, and on-chain wallet addresses are distinct identifiers linked by the user record.
+`AccountSession.restore()` creates separate IndexedDB storage for each user, then constructs `fiberlsp`. Secure contexts use `BrowserStorage`. Plain HTTP uses the plaintext implementation in `business/storage.ts`, with a `-plaintext` database suffix, and never reads or overwrites encrypted databases. HTTP mode uses separate IndexedDB read/write transactions for locking across tabs. It keeps transactions alive with repeated requests during asynchronous work. This fallback is for the example only. Browser storage does not migrate automatically when the protocol, host, or port changes. App user IDs, LSP tenant IDs, and on-chain wallet addresses are distinct identifiers linked by the user record.
 
 Each user has separate storage and an SDK manager. A user can register multiple tenants, managed through “Add tenant” and the “Current tenant” selector. After refresh, the app reads `listTenants()` and restores the selected tenant. Interrupted registration resumes with the same identity. Do not generate a new identity after a network failure. The backend JSON stores tenant IDs and root public keys in `tenantIds` and `rootPublicKeys` arrays as sets, not paired by index. Registration and token refresh append unique values. Root public keys verify bindings but cannot restore private keys.
 
@@ -113,7 +116,7 @@ const result = await registerTenant(proof, {
   readToken: () => secrets.readLspOperatorToken(),
   user: { id: currentUser.id, store: tenantBindings },
 });
-// Return result (tenant + access_token) to the SDK to finish registration or token refresh.
+// Return { tenant, access_token, expires_at_ms } to the SDK.
 ```
 
 `tenantBindings` only needs the file's `bindRoot()` and `bindTenant()` methods and can use your own database. The example's `UserStore` implements both. Omit `user` when no app user binding is needed. `readToken()` runs for each request, so it can read the latest operator token from a file or secret service.
@@ -127,6 +130,7 @@ The module first saves the root public key binding, requests an LSP token, verif
 - `getTransaction()`: returns only confirmed transactions, removing the extra `hash` field from CKB `TransactionView`.
 - `getLiveCell()`: checks the current unspent Cell.
 - `getCell()`: resolves the transaction that created an input, even if the funding transaction has already spent it.
+- `getMedianTime()` reads `median_time` from the trusted CKB node's `get_blockchain_info` response. The SDK uses this hex millisecond timestamp before releasing an invoice preimage.
 
 `fundingWallet()` implements the SDK's `FundingWallet` interface:
 
@@ -138,13 +142,13 @@ The example backend uses CCC for offckb default lock signing. Replace this adapt
 
 ### 4. Subscribe before querying or acting
 
-`attachClient()` subscribes to `ChannelChanged`, `BalanceChanged`, `PaymentChanged`, `InvoiceChanged`, and `Error` before querying. The UI merges state by increasing `version`.
+`attachClient()` subscribes to `ChannelChanged`, `BalanceChanged`, `PaymentChanged`, `InvoiceChanged`, and `Error` before querying. The account session merges state by increasing `version`.
 
 The SDK handles background reconciliation; the page has no global refresh timer. Initial loading and manual refresh check network status, users, wallet balances, and SDK state. Channel readiness, verified closure, and completed payments trigger wallet balance updates, with updates deferred while an operation or refresh is in progress. Signing notifications are immediate, idle WebSocket reconciliation defaults to 15 seconds, and unfinished operations use the example's one-second interval to discover state changes without signing notifications. Trusted CKB checks remain independent of the LSP transport. Use manual refresh to discover unrelated on-chain transfers or user changes made in another page.
 
 Each tenant can open multiple channels through “Add channel” and switch between them with “Current channel”. `AccountSession.channels` lists the selected tenant’s channels; `selectChannel(operationId)` selects one, including an opening that does not yet have a channel ID. The selected channel is remembered per tenant in sessionStorage. Balances, invoices, payment history, and closing use the selected channel. Background updates keep all channels current without changing the selection. An unfinished opening is resumed before another channel is created.
 
-A completed open call does not mean the channel is usable. Enable payments only when `ChannelInfo.ready` is true. Both channels need liquidity in the required direction. Payments use `createInvoice()` and `payInvoice()`. The UI shows completion only when `PaymentInfo.complete` is true; server `Success` / `Paid` states alone are insufficient.
+Both parties exchange V2 commitment signatures and the SDK verifies the local commitment before the wallet signs the funding transaction. If the UI shows **Resume opening**, use it to continue with the same wallet and funding terms. Enable payments only when `ChannelInfo.ready` is true. Both channels need liquidity in the required direction. Payments use `createInvoice()` and `payInvoice()`. The UI shows completion only when `PaymentInfo.complete` is true; server `Success` / `Paid` states alone are insufficient.
 
 The example automatically approves protocol signatures verified by the SDK. Funding, payment, and closing each require user confirmation once. Production apps can set their signing approval policy through `onConfirm`.
 

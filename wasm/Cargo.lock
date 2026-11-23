@@ -557,8 +557,8 @@ checksum = "5ad8c7269456fd609f700340399dca5fa160c4785c9623f87b6079e5a479f28b"
 
 [[package]]
 name = "fiber-json-types"
-version = "0.10.0-rc1"
-source = "git+https://github.com/chenyukang/fiber?rev=76307312e8de518c9a32074e6d16867c04de4f86#76307312e8de518c9a32074e6d16867c04de4f86"
+version = "0.10.1"
+source = "git+https://github.com/chenyukang/fiber?rev=5da02c0d0843b5a690eb82a8cc915bf7b4438693#5da02c0d0843b5a690eb82a8cc915bf7b4438693"
 dependencies = [
  "ckb-jsonrpc-types",
  "ckb-types",
@@ -575,7 +575,7 @@ dependencies = [
 [[package]]
 name = "fiber-lsp-sdk"
 version = "0.1.0"
-source = "git+https://github.com/chenyukang/fiber?rev=76307312e8de518c9a32074e6d16867c04de4f86#76307312e8de518c9a32074e6d16867c04de4f86"
+source = "git+https://github.com/chenyukang/fiber?rev=5da02c0d0843b5a690eb82a8cc915bf7b4438693#5da02c0d0843b5a690eb82a8cc915bf7b4438693"
 dependencies = [
  "async-trait",
  "bincode",
@@ -600,6 +600,7 @@ name = "fiber-lsp-sdk-wasm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bincode",
  "ckb-jsonrpc-types",
  "ckb-types",
  "fiber-json-types",
@@ -628,8 +629,8 @@ dependencies = [
 
 [[package]]
 name = "fiber-types"
-version = "0.10.0-rc1"
-source = "git+https://github.com/chenyukang/fiber?rev=76307312e8de518c9a32074e6d16867c04de4f86#76307312e8de518c9a32074e6d16867c04de4f86"
+version = "0.10.1"
+source = "git+https://github.com/chenyukang/fiber?rev=5da02c0d0843b5a690eb82a8cc915bf7b4438693#5da02c0d0843b5a690eb82a8cc915bf7b4438693"
 dependencies = [
  "anyhow",
  "arcode",

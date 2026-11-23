@@ -1,9 +1,8 @@
 import type { User } from '../shared/types.ts';
 import { errorMessage } from '../shared/types.ts';
-import type { AccountSession, AccountEvent } from './account-session.ts';
-import { ExampleApp } from './example-app.ts';
+import type { AccountSession, AccountEvent } from '../business/account-session.ts';
+import { ExampleApp } from '../business/example-app.ts';
 import { formatCkb as ckb, parseCkb as amount } from './amount.ts';
-import { plaintextStorage } from './storage.ts';
 interface Slot {
   id: string;
   element: HTMLElement;
@@ -20,10 +19,10 @@ function $<T extends HTMLElement = HTMLElement>(
   if (!element) throw Error(`Missing example element: ${selector}`);
   return element;
 }
-$('#storage-notice').textContent = plaintextStorage
+$('#storage-notice').textContent = ExampleApp.usesPlaintextStorage
   ? 'HTTP · Private keys stored in plaintext, for testing only'
   : 'Private keys are encrypted';
-$('#storage-notice').classList.toggle('plaintext', plaintextStorage);
+$('#storage-notice').classList.toggle('plaintext', ExampleApp.usesPlaintextStorage);
 const slots: Slot[] = ['left', 'right'].map((id, index) => {
   const element = $(`#${id}`);
   element.append($<HTMLTemplateElement>('#panel-template').content.cloneNode(true));
@@ -330,7 +329,7 @@ openChannelForm.onsubmit = (event) => {
   let fundingAmount: bigint;
   try {
     fundingAmount = amount($<HTMLInputElement>('[name=fundingAmount]', openChannelForm).value);
-    const minimum = BigInt(app.connection.config.wallet.minFundingAmount);
+    const minimum = app.minFundingAmount;
     if (fundingAmount < minimum) throw Error(`Enter at least ${ckb(minimum)} CKB`);
   } catch (error) {
     message($('#open-channel-error'), errorMessage(error), true);
@@ -595,7 +594,7 @@ userForm.onreset = () => {
 
 function renderAccountChoices(selected = '') {
   accountSelect.replaceChildren(new Option('Select a wallet', ''));
-  const accounts = [...app.connection.config.accounts].sort((a, b) => a.index - b.index);
+  const accounts = [...app.accounts].sort((a, b) => a.index - b.index);
   for (const account of accounts) {
     const user = app.users.find((entry) => entry.accountIndex === account.index);
     const reason = account.reserved ?? (user ? `Linked to ${user.display}` : 'Available');
@@ -654,7 +653,7 @@ userForm.onsubmit = async (event) => {
 $<HTMLButtonElement>('#refresh').onclick = () => (app ? refresh() : window.location.reload());
 try {
   app = await ExampleApp.connect(window.location.origin);
-  $('#endpoint').textContent = `CKB RPC: ${app.connection.config.ckbRpcUrl}`;
+  $('#endpoint').textContent = `CKB RPC: ${app.ckbRpcUrl}`;
   $<HTMLButtonElement>('#add-user').disabled = false;
   await loadUsers();
   const selected = JSON.parse(sessionStorage.getItem('fiber-example-panels') ?? '[]') as (

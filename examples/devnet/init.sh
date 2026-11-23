@@ -3,7 +3,7 @@ set -e
 . "$(dirname -- "$0")/config.sh"
 sh examples/devnet/stop.sh
 offckb node --daemon
-offckb fiber init --nodes 3 --binary-path "$PWD/../fiber/target/release/fnn"
+offckb fiber init --nodes 3 --binary-path "$FNN_PATH"
 node examples/devnet/configure.ts
 mkdir -p .devnet/keys
 printf '%s\n' 'read("node"); read("lsp"); write("lsp");' |

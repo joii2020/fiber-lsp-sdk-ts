@@ -40,10 +40,17 @@ export async function channelHarness(options: HarnessOptions = {}) {
   };
   const raw = () => ({
     ...channel,
-    state: {
-      state_name: submitted ? 'ChannelReady' : 'NegotiatingFunding',
-      state_flags: 'AWAITING_EXTERNAL_FUNDING',
-    },
+    state: submitted
+      ? { state_name: 'ChannelReady' }
+      : index === 0
+        ? { state_name: 'NegotiatingFunding', state_flags: 'AWAITING_EXTERNAL_FUNDING' }
+        : {
+            state_name: 'SigningCommitment',
+            state_flags:
+              index === 1
+                ? 'THEIR_COMMITMENT_SIGNED_SENT|COMMITMENT_SIGNED_SENT'
+                : 'OUR_COMMITMENT_SIGNED_SENT|THEIR_COMMITMENT_SIGNED_SENT|COMMITMENT_SIGNED_SENT',
+          },
   });
   const network = fiberLsp.network;
   const terms: FundingTerms = {
@@ -90,6 +97,7 @@ export async function channelHarness(options: HarnessOptions = {}) {
       return f.proposal;
     }
     if (method === 'submit_signed_funding_tx') {
+      assert.equal(index, f.statuses.length, 'initial commitment signatures precede funding');
       submitted = true;
       return {
         channel_id: f.proposal.channel_id,
@@ -99,10 +107,7 @@ export async function channelHarness(options: HarnessOptions = {}) {
     if (method === 'get_channel_signing_status')
       return {
         channel_id: f.proposal.channel_id,
-        status:
-          submitted && index < f.statuses.length
-            ? f.statuses[index]
-            : { type: 'NoSignatureRequired' },
+        status: f.statuses[index] ?? { type: 'NoSignatureRequired' },
       };
     if (method === 'submit_channel_signature') {
       const state = (await storage.get<TenantRecord>(`tenant/${f.tenantId}`))!;
@@ -133,7 +138,14 @@ export async function channelHarness(options: HarnessOptions = {}) {
   const wallet: FundingWallet = {
     getFundingTerms: async () => terms,
     verifyFunding: async (tx) => tx.inputs.map((i) => i.previous_output),
-    signFundingTransaction: async (tx) => ({ ...tx, witnesses: ['0x01'] }),
+    signFundingTransaction: async (tx) => {
+      assert.equal(
+        index,
+        f.statuses.length,
+        'initial commitment signatures precede wallet signing',
+      );
+      return { ...tx, witnesses: ['0x01'] };
+    },
   };
   return {
     f,

@@ -7,8 +7,8 @@ import type {
   PaymentInfo,
   TenantInfo,
 } from 'fiber-lsp-sdk';
-import { fundingWallet, request } from '../shared/connection.ts';
-import type { DevnetConnection } from '../shared/connection.ts';
+import { fundingWallet, request } from './connection.ts';
+import type { DevnetConnection } from './connection.ts';
 import { jsonStringify } from '../shared/types.ts';
 import type { PaymentJson, RegisterUserResult, User, WalletBalance } from '../shared/types.ts';
 import { createExampleStorage } from './storage.ts';

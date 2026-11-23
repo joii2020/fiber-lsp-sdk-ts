@@ -75,6 +75,7 @@ export interface LiveCellResponse {
 export interface ChainRpcResults {
   get_transaction: TransactionResponse | null;
   get_live_cell: LiveCellResponse;
+  get_blockchain_info: { median_time: Hex };
 }
 export type ChainCall = <M extends keyof ChainRpcResults>(
   method: M,

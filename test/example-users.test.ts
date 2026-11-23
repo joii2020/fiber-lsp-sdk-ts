@@ -196,14 +196,14 @@ test('offckb wallet rejects wrong change, excess fees, missing remote funding an
   await assert.rejects(verifyWalletFunding(config, user, duplicate, terms, call), /Duplicate/);
 });
 
-test('chain adapter removes TransactionView metadata and only returns committed transactions', async () => {
-  const { chainProvider } = await import('../examples/shared/connection.ts');
+test('chain adapter returns committed transactions and trusted median time', async () => {
+  const { chainProvider } = await import('../examples/business/connection.ts');
   const { tx } = fundingFixture();
   let committed = false;
   const chain = chainProvider(async <M extends keyof ChainRpcResults>(method: M) => {
-    assert.equal(method, 'get_transaction');
     const results: ChainRpcResults = {
       get_live_cell: { status: 'dead' },
+      get_blockchain_info: { median_time: '0x18bcfe56800' },
       get_transaction: {
         tx_status: { status: committed ? 'committed' : 'pending' },
         transaction: { ...tx, hash: '0xmetadata' },
@@ -218,4 +218,5 @@ test('chain adapter removes TransactionView metadata and only returns committed 
     output: tx.outputs[0],
     data: tx.outputs_data[0],
   });
+  assert.equal(await chain.getMedianTime?.(network), '0x18bcfe56800');
 });

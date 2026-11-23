@@ -10,5 +10,5 @@
     "types": [],
     "paths": {}
   },
-  "include": ["browser/**/*.ts", "shared/**/*.ts"]
+  "include": ["ui/**/*.ts", "business/**/*.ts", "shared/**/*.ts"]
 }
