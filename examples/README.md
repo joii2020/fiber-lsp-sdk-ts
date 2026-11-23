@@ -40,7 +40,7 @@ pnpm test           # Run Node tests.
 
 ## Where to start
 
-The [Chinese integration guide](../docs/integration-zh.md) covers the SDK call flow and the interfaces your app supplies.
+The integration guide covers the SDK call flow and the interfaces your app supplies. [English](../docs/integration.md) · [中文](../docs/integration-zh.md)
 
 **For SDK usage, start with [business/account-session.ts](business/account-session.ts).** It covers setup, identity recovery, registration, event subscriptions, channel opening, payments, and cleanup.
 

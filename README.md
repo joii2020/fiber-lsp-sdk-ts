@@ -2,6 +2,8 @@
 
 A TypeScript SDK for connecting browser and Node.js apps to Fiber LSP. It handles tenant registration, payment channels, sending and receiving payments, and recovery of interrupted operations.
 
+[Integration guide](docs/integration.md) · [中文接入指南](docs/integration-zh.md) · [Local demo](examples/README.md)
+
 ## Install
 
 ```sh
@@ -29,5 +31,3 @@ console.log(await client.listChannels());
 ```
 
 Open a channel with `client.openChannel({ wallet })`. Once it is ready, use `client.createInvoice` to receive a payment or `client.payInvoice` to send one.
-
-[中文接入指南](docs/integration-zh.md) · [Local demo](examples/README.md)
